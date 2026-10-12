@@ -76,7 +76,7 @@ GAT_LEAKY_RELU_SLOPE: float = 0.2
 # =============================================================================
 # 4. HP — Optimizer & Training defaults
 # =============================================================================
-HP_WANDB_PROJECT: str = "protein-mpnn-oa"
+HP_WANDB_PROJECT: str = "protein-mpnn-oa-natcom"
 HP_NOAM_FACTOR: int = 2
 HP_NOAM_WARMUP: int = 4000
 HP_ADAM_BETAS: tuple = (0.9, 0.98)
