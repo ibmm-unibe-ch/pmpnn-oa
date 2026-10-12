@@ -68,15 +68,24 @@ def build_training_clusters(
 # HDF5-backed loader — replaces loader_pdb + the .pt chain files
 # ---------------------------------------------------------------------------
 
-_h5_handles: Dict[str, h5py.File] = {}
+_h5_handles: Dict[Tuple[str, bool], h5py.File] = {}
 
-def _get_h5(h5_file: str) -> h5py.File:
-    if h5_file not in _h5_handles:
-        _h5_handles[h5_file] = h5py.File(h5_file, "r", swmr=True)
-    return _h5_handles[h5_file]
+def _get_h5(h5_file: str, in_memory: bool = False) -> h5py.File:
+    key = (h5_file, in_memory)
+    if key not in _h5_handles:
+        if in_memory:
+            _h5_handles[key] = h5py.File(h5_file, "r", driver="core", backing_store=False, libver="latest")
+        else:
+            _h5_handles[key] = h5py.File(h5_file, "r", swmr=True)
+    return _h5_handles[key]
 
 
-def _loader_h5(item: List[str], h5_file: str, homo_threshold: float = DATA_HOMO_THRESHOLD) -> dict:
+def _loader_h5(
+    item: List[str],
+    h5_file: str,
+    homo_threshold: float = DATA_HOMO_THRESHOLD,
+    in_memory: bool = False,
+) -> dict:
     """
     Load one protein entry from the HDF5 file.
 
@@ -92,7 +101,7 @@ def _loader_h5(item: List[str], h5_file: str, homo_threshold: float = DATA_HOMO_
     """
     pdbid, chid = item[0].split("_")
 
-    hf = _get_h5(h5_file)
+    hf = _get_h5(h5_file, in_memory)
     if pdbid not in hf:
         return {"seq": np.zeros(5)}
 
@@ -201,11 +210,13 @@ def _loader_h5(item: List[str], h5_file: str, homo_threshold: float = DATA_HOMO_
 # ---------------------------------------------------------------------------
 
 class ProteinH5Dataset(torch.utils.data.Dataset):
-    def __init__(self, ids: List, cluster_dict: Dict, h5_file: str, max_length: int):
+    def __init__(self, ids: List, cluster_dict: Dict, h5_file: str, max_length: int,
+                 in_memory: bool = False):
         self.ids          = ids
         self.cluster_dict = cluster_dict
         self.h5_file      = h5_file
         self.max_length   = max_length
+        self.in_memory    = in_memory
 
     def __len__(self):
         return len(self.ids)
@@ -213,7 +224,7 @@ class ProteinH5Dataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         cluster_id = self.ids[index]
         entry = random.choice(self.cluster_dict[cluster_id])
-        return _to_pdb_dict(_loader_h5(entry, self.h5_file), self.max_length)
+        return _to_pdb_dict(_loader_h5(entry, self.h5_file, in_memory=self.in_memory), self.max_length)
 
 
 def _collate_skip_none(batch: list) -> list:

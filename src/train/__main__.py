@@ -107,8 +107,8 @@ def load_dataloaders(ctx):
         collate_fn  = _collate_skip_none,
         generator   = g,
     )
-    train_set = ProteinH5Dataset(list(train_clusters.keys()), train_clusters, ctx.h5_file, ctx.max_protein_length)
-    valid_set = ProteinH5Dataset(list(valid_clusters.keys()), valid_clusters, ctx.h5_file, ctx.max_protein_length)
+    train_set = ProteinH5Dataset(list(train_clusters.keys()), train_clusters, ctx.h5_file, ctx.max_protein_length, ctx.h5_in_memory)
+    valid_set = ProteinH5Dataset(list(valid_clusters.keys()), valid_clusters, ctx.h5_file, ctx.max_protein_length, ctx.h5_in_memory)
     train_loader = torch.utils.data.DataLoader(train_set, worker_init_fn=worker_init_fn, **loader_kwargs)
     valid_loader = torch.utils.data.DataLoader(valid_set, worker_init_fn=worker_init_fn, **loader_kwargs)
 

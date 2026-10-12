@@ -39,6 +39,7 @@ from pmpnn.constants import (
 class Context:
     # ── data ──────────────────────────────────────────────────────────────────
     h5_file: str
+    h5_in_memory: bool
     index: str
     val_clu_index: str
     test_clu_index: str
@@ -175,6 +176,11 @@ class Context:
         p.add_argument("out_dir",        help="Output directory for logs and model weights (must not already exist)")
 
         data = p.add_argument_group("Data")
+        data.add_argument("--h5_in_memory", action="store_true",
+                          help="Load the whole HDF5 file into RAM (h5py driver='core', "
+                               "backing_store=False, libver='latest') instead of reading it "
+                               "from disk on demand. Each DataLoader worker process loads its "
+                               "own copy, so RAM use scales with --num_workers.")
         data.add_argument("--num_examples_per_epoch", type=int, default=HP_NUM_EXAMPLES_PER_EPOCH,
                           help="Number of sequence clusters sampled per epoch")
         data.add_argument("--max_protein_length", type=int, default=DATA_MAX_PROTEIN_LENGTH,
