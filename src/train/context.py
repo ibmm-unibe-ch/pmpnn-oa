@@ -9,6 +9,7 @@ from pmpnn.constants import (
     DATA_TRAIN_CLUSTER_FRACTION,
     HP_BACKBONE_NOISE,
     HP_BATCH_SIZE,
+    HP_EVAL_SEED,
     HP_FREEZE_MODE,
     HP_GRADIENT_NORM,
     HP_MIN_DELTA,
@@ -83,6 +84,7 @@ class Context:
 
     # ── reproducibility ───────────────────────────────────────────────────────
     seed: int = HP_SEED
+    val_seed: int = HP_EVAL_SEED
 
     # ── runtime state (populated during training, not from CLI) ───────────────
     device:       object = field(default=None, repr=False)
@@ -247,6 +249,11 @@ class Context:
 
         p.add_argument("--seed", type=int, default=HP_SEED,
                        help="Global random seed for reproducibility")
+        p.add_argument("--val_seed", type=int, default=HP_EVAL_SEED,
+                       help="Seed for the validation-time decoding-order randn draw, "
+                            "re-applied at the start of every validation epoch. Deliberately "
+                            "independent of --seed, so models trained with different --seed "
+                            "values are validated under identical randomness")
 
         wandb = p.add_argument_group("Logging")
         wandb.add_argument("--wandb_project", type=str, default=HP_WANDB_PROJECT,

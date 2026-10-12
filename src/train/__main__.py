@@ -203,10 +203,10 @@ def train_batch_fn(ctx, batch, num_accum):
     )
 
 
-def val_batch_fn(ctx, batch):
+def val_batch_fn(ctx, batch, generator):
     X, S, mask, lengths, chain_M, residue_idx, mask_self, chain_encoding_all = featurize(batch, ctx.device)
     mask_for_loss = mask * chain_M
-    randn = torch.randn_like(chain_M)
+    randn = torch.randn(chain_M.shape, generator=generator, dtype=chain_M.dtype, device=chain_M.device)
     out = ctx.model(X, S, mask, chain_M, residue_idx, chain_encoding_all, randn)
     loss, _, true_false = loss_nll(S, out.log_probs, mask_for_loss)
     S_pred    = torch.argmax(out.log_probs, -1)
@@ -260,9 +260,12 @@ def val_epoch_fn(ctx):
     ctx.model.eval()
     total_sum = total_acc = total_weights = 0.0
     all_true, all_pred = [], []
+    # Re-seeded every epoch, independent of ctx.seed.
+    generator = torch.Generator(device=ctx.device)
+    generator.manual_seed(ctx.val_seed)
     with torch.no_grad():
         for batch in ctx.valid_loader:
-            s, a, w, s_true, s_pred = val_batch_fn(ctx, batch)
+            s, a, w, s_true, s_pred = val_batch_fn(ctx, batch, generator)
             total_sum     += s
             total_acc     += a
             total_weights += w

@@ -92,6 +92,7 @@ HP_PATIENCE: int = 20
 HP_MIN_DELTA: float = 1e-4
 HP_NUM_EXAMPLES_PER_EPOCH: int = 1_000_000
 HP_SEED: int = 42
+HP_EVAL_SEED: int = 1234
 HP_BACKBONE_NOISE: float = 0.2
 HP_GRADIENT_NORM: float = -1.0
 # Default encoder mode. Choices: "vanilla", "oa", "gat".
