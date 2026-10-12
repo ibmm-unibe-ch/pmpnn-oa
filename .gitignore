@@ -1,0 +1,45 @@
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+wheels/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ── Environment (uv) ──────────────────────────────────────────────────────
+.venv/
+# uv.lock is intentionally tracked
+
+# ── Downloaded assets (see Makefile: `make data`, `make ckpt`) ────────────
+/data/
+/ckpt/
+*.tar.gz
+
+# ── Model weights & training state ────────────────────────────────────────
+*.pt
+*.pth
+*.safetensors
+model_weights/
+
+# ── Datasets / cached tensors & arrays ────────────────────────────────────
+*.h5
+*.hdf5
+*.npy
+*.npz
+
+# ── Run logs & tracking ───────────────────────────────────────────────────
+/wandb/
+*.log
+log.txt
+slurm-*.out
+*.sbatch.out
+*.sbatch.err
+
+# ── Local scratch ─────────────────────────────────────────────────────────
+/scratch/
+/tmp/
+.DS_Store

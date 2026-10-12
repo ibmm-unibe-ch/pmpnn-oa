@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "protein-mpnn-oa"
+version = "0.1.0"
+description = "ProteinMPNN with Orbital Attention"
+readme = "README.md"
+requires-python = "==3.11.15"
+dependencies = [
+    "e3nn==0.5",
+    "gemmi==0.7.5",
+    "h5py==3.16.0",
+    "joblib==1.5.3",
+    "mrcfile==1.5.4",
+    "numpy==1.24",
+    "python-dateutil>=2.8",
+    "scipy==1.15",
+    "torch==2.10.0+cu128",
+    "torchvision==0.25.0+cu128",
+    "tqdm==4.67.3",
+    "wandb==0.25.1",
+    "transformers",
+    "accelerate",
+    "matplotlib"
+]
+
+[project.scripts]
+pmpnn-train     = "train.__main__:main"
+pmpnn-eval      = "eval.__main__:main"
+pmpnn-gen       = "gen.__main__:main"
+pmpnn-esmfold   = "esmfold.__main__:main"
+pmpnn-stats     = "vis.stats:main"
+pmpnn-budget    = "vis.budget:main"
+pmpnn-aa_heatmaps = "vis.aa_heatmaps:main"
+pmpnn-oa_spectral = "vis.oa_spectral:main"
+pmpnn-oa_geometry = "vis.oa_geometry:main"
+pmpnn-to_h5     = "data.to_h5:main"
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.setuptools]
+packages = ["pmpnn", "train", "eval", "gen", "esmfold", "vis", "data"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+"pmpnn" = "src/pmpnn"
