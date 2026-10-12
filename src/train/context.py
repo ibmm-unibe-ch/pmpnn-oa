@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pmpnn.constants import (
     DATA_MAX_PROTEIN_LENGTH,
     DATA_RESCUT,
+    DATA_TRAIN_CLUSTER_FRACTION,
     HP_BACKBONE_NOISE,
     HP_BATCH_SIZE,
     HP_FREEZE_MODE,
@@ -44,6 +45,7 @@ class Context:
     num_examples_per_epoch: int
     max_protein_length: int
     rescut: float
+    train_cluster_fraction: float
     debug: bool
 
     # ── model ─────────────────────────────────────────────────────────────────
@@ -121,6 +123,9 @@ class Context:
             raise ValueError(f"backbone_noise must be >= 0, got {self.backbone_noise}")
         if self.rescut <= 0.0:
             raise ValueError(f"rescut must be > 0, got {self.rescut}")
+        if not (0.0 < self.train_cluster_fraction <= 1.0):
+            raise ValueError(
+                f"train_cluster_fraction must be in (0, 1], got {self.train_cluster_fraction}")
 
         if self.mode == "oa" and self.r_max_orb <= 0.0:
             raise ValueError(f"r_max_orb must be > 0, got {self.r_max_orb}")
@@ -174,6 +179,11 @@ class Context:
                           help="Maximum protein length in residues; longer proteins are discarded")
         data.add_argument("--rescut", type=float, default=DATA_RESCUT,
                           help="Maximum resolution cutoff (Å) for filtering structures")
+        data.add_argument("--train_cluster_fraction", type=float, default=DATA_TRAIN_CLUSTER_FRACTION,
+                          help="Fraction of training clusters to keep (in (0, 1]). Clusters are "
+                               "sorted ascending by number of member entries and the smallest "
+                               "ceil(fraction * N) are kept; 1.0 uses the full training set. "
+                               "Applied after the val/test split, before sampling.")
         data.add_argument("--debug", action="store_true",
                           help="Enable debug mode: reduces dataset size and protein length for fast iteration")
 

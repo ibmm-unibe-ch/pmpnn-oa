@@ -1,3 +1,4 @@
+import math
 import os
 import random
 import time
@@ -71,10 +72,29 @@ def set_seed(seed: int):
 # Setup functions
 # ---------------------------------------------------------------------------
 
+def _subset_smallest_clusters(train_clusters, fraction):
+    """Keep the `fraction` of training clusters with the fewest member entries.
+
+    Clusters are sorted ascending by (n_entries, cluster_id) so the selection is
+    deterministic on ties, then the smallest ceil(fraction * N) are retained.
+    """
+    if fraction >= 1.0:
+        return train_clusters
+    n_total = len(train_clusters)
+    n_keep  = max(1, math.ceil(fraction * n_total))
+    ordered = sorted(train_clusters.items(), key=lambda kv: (len(kv[1]), kv[0]))
+    kept    = dict(ordered[:n_keep])
+    print(f"train_cluster_fraction={fraction}: keeping {n_keep}/{n_total} smallest "
+          f"training clusters ({sum(len(v) for v in kept.values())}/"
+          f"{sum(len(v) for v in train_clusters.values())} entries)")
+    return kept
+
+
 def load_dataloaders(ctx):
     train_clusters, valid_clusters, _ = build_training_clusters(
         ctx.index, ctx.val_clu_index, ctx.test_clu_index, ctx.rescut, ctx.debug
     )
+    train_clusters = _subset_smallest_clusters(train_clusters, ctx.train_cluster_fraction)
 
     g = torch.Generator()
     g.manual_seed(ctx.seed)

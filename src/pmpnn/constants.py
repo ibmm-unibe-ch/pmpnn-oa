@@ -105,6 +105,7 @@ HP_FREEZE_MODE: str = "none"
 # =============================================================================
 DATA_MAX_PROTEIN_LENGTH: int = 10_000
 DATA_RESCUT: float = 3.5
+DATA_TRAIN_CLUSTER_FRACTION: float = 1.0
 DATA_HOMO_THRESHOLD: float = 0.70
 DATA_CA_BOND_MIN: float = 3.6
 DATA_CA_BOND_MAX: float = 4.0
