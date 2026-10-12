@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+import queue
 import random
+import threading
 from typing import Dict, List, Tuple
 
 import h5py
@@ -362,3 +364,52 @@ class StreamingStructureLoader:
                 batch = [buffer[ix]]
         if batch:
             yield batch
+
+
+# ---------------------------------------------------------------------------
+# PrefetchLoader
+# ---------------------------------------------------------------------------
+
+class PrefetchLoader:
+    """
+    Wraps an iterable of raw batches and runs ``collate_fn`` plus host-side
+    pinning in a background daemon thread, so the next batch is built while
+    the current step runs. Iterate the ready-made results off a bounded
+    queue; move each result to the target device with
+    ``.to(device, non_blocking=True)``.
+    """
+
+    _DONE = object()
+
+    def __init__(self, loader, collate_fn=None, pin_memory: bool = True, max_queue: int = 4):
+        self.loader     = loader
+        self.collate_fn = collate_fn
+        self.pin_memory = pin_memory and torch.cuda.is_available()
+        self.max_queue  = max_queue
+
+    def __iter__(self):
+        q = queue.Queue(maxsize=self.max_queue)
+
+        def _producer():
+            try:
+                for batch in self.loader:
+                    if self.collate_fn is not None:
+                        batch = self.collate_fn(batch)
+                    if self.pin_memory:
+                        batch = torch.utils.data._utils.pin_memory.pin_memory(batch)
+                    q.put(batch)
+            except Exception as e:
+                q.put(e)
+            finally:
+                q.put(self._DONE)
+
+        t = threading.Thread(target=_producer, daemon=True)
+        t.start()
+
+        while True:
+            item = q.get()
+            if item is self._DONE:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item

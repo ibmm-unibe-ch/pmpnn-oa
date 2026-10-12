@@ -1,3 +1,4 @@
+import functools
 import math
 import os
 import random
@@ -13,8 +14,11 @@ from pmpnn.constants import (
     BLOSUM62,
     DATALOADER_BATCH_SIZE,
     DATALOADER_NUM_WORKERS,
+    DATALOADER_PREFETCH_FACTOR,
+    DATALOADER_PREFETCH_QUEUE_SIZE,
 )
 from pmpnn.data import (
+    PrefetchLoader,
     ProteinH5Dataset,
     StreamingStructureLoader,
     _collate_skip_none,
@@ -100,12 +104,13 @@ def load_dataloaders(ctx):
     g.manual_seed(ctx.seed)
 
     loader_kwargs = dict(
-        batch_size  = DATALOADER_BATCH_SIZE,
-        shuffle     = True,
-        pin_memory  = False,
-        num_workers = DATALOADER_NUM_WORKERS,
-        collate_fn  = _collate_skip_none,
-        generator   = g,
+        batch_size      = DATALOADER_BATCH_SIZE,
+        shuffle         = True,
+        pin_memory      = False,
+        num_workers     = DATALOADER_NUM_WORKERS,
+        prefetch_factor = DATALOADER_PREFETCH_FACTOR,
+        collate_fn      = _collate_skip_none,
+        generator       = g,
     )
     train_set = ProteinH5Dataset(list(train_clusters.keys()), train_clusters, ctx.h5_file, ctx.max_protein_length, ctx.h5_in_memory)
     valid_set = ProteinH5Dataset(list(valid_clusters.keys()), valid_clusters, ctx.h5_file, ctx.max_protein_length, ctx.h5_in_memory)
@@ -114,6 +119,13 @@ def load_dataloaders(ctx):
 
     train_loader = StreamingStructureLoader(train_loader, ctx.mini_batch_size, num_units=ctx.num_examples_per_epoch)
     valid_loader = StreamingStructureLoader(valid_loader, ctx.mini_batch_size, num_units=ctx.num_examples_per_epoch)
+
+    # Runs off the main thread; produces pinned CPU tensors moved to device in train_batch_fn/val_batch_fn.
+    featurize_cpu = functools.partial(featurize, device=None)
+    train_loader = PrefetchLoader(train_loader, collate_fn=featurize_cpu, pin_memory=True,
+                                   max_queue=DATALOADER_PREFETCH_QUEUE_SIZE)
+    valid_loader = PrefetchLoader(valid_loader, collate_fn=featurize_cpu, pin_memory=True,
+                                   max_queue=DATALOADER_PREFETCH_QUEUE_SIZE)
     return train_loader, valid_loader
 
 
@@ -180,8 +192,12 @@ def load_optimizer(ctx, model):
 # Batch functions
 # ---------------------------------------------------------------------------
 
-def train_batch_fn(ctx, batch, num_accum):
-    X, S, mask, lengths, chain_M, residue_idx, mask_self, chain_encoding_all = featurize(batch, ctx.device)
+def train_batch_fn(ctx, featurized, num_accum):
+    X, S, mask, lengths, chain_M, residue_idx, mask_self, chain_encoding_all = featurized
+    X, S, mask, chain_M, residue_idx, mask_self, chain_encoding_all = (
+        t.to(ctx.device, non_blocking=True)
+        for t in (X, S, mask, chain_M, residue_idx, mask_self, chain_encoding_all)
+    )
     mask_for_loss = mask * chain_M
     randn = torch.randn_like(chain_M)
 
@@ -203,8 +219,12 @@ def train_batch_fn(ctx, batch, num_accum):
     )
 
 
-def val_batch_fn(ctx, batch, generator):
-    X, S, mask, lengths, chain_M, residue_idx, mask_self, chain_encoding_all = featurize(batch, ctx.device)
+def val_batch_fn(ctx, featurized, generator):
+    X, S, mask, lengths, chain_M, residue_idx, mask_self, chain_encoding_all = featurized
+    X, S, mask, chain_M, residue_idx, mask_self, chain_encoding_all = (
+        t.to(ctx.device, non_blocking=True)
+        for t in (X, S, mask, chain_M, residue_idx, mask_self, chain_encoding_all)
+    )
     mask_for_loss = mask * chain_M
     randn = torch.randn(chain_M.shape, generator=generator, dtype=chain_M.dtype, device=chain_M.device)
     out = ctx.model(X, S, mask, chain_M, residue_idx, chain_encoding_all, randn)
@@ -231,8 +251,8 @@ def train_epoch_fn(ctx):
     accum_count = 0
     ctx.optimizer.zero_grad()
 
-    for batch in ctx.train_loader:
-        s, a, w = train_batch_fn(ctx, batch, num_accum)
+    for featurized in ctx.train_loader:
+        s, a, w = train_batch_fn(ctx, featurized, num_accum)
         total_sum     += s
         total_acc     += a
         total_weights += w
@@ -264,8 +284,8 @@ def val_epoch_fn(ctx):
     generator = torch.Generator(device=ctx.device)
     generator.manual_seed(ctx.val_seed)
     with torch.no_grad():
-        for batch in ctx.valid_loader:
-            s, a, w, s_true, s_pred = val_batch_fn(ctx, batch, generator)
+        for featurized in ctx.valid_loader:
+            s, a, w, s_true, s_pred = val_batch_fn(ctx, featurized, generator)
             total_sum     += s
             total_acc     += a
             total_weights += w

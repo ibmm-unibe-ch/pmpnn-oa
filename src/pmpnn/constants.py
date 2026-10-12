@@ -119,6 +119,8 @@ DATA_DATCUT: str = "2030-Jan-01"
 DATALOADER_BATCH_SIZE: int = 32
 DATALOADER_NUM_WORKERS: int = 8
 DATALOADER_STREAMING_BUFFER_SIZE: int = 2_000
+DATALOADER_PREFETCH_FACTOR: int = 8
+DATALOADER_PREFETCH_QUEUE_SIZE: int = 16
 
 
 # =============================================================================
