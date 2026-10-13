@@ -24,14 +24,24 @@ the pre-computed .npz file.
 This script works for OA-mode statistics files.  The neighbourhood figures also
 work for GAT-mode files (they do not require theta / phi arrays).
 
+Multiple ``.npz`` files may be given at once — one per seed of the same
+architecture/config (e.g. ``oa3_seed0``, ``oa3_seed1``, ``oa3_seed2``).  All
+files must share the same number of encoder layers; their residues and edges
+are pooled into a single combined result (as if they came from one larger
+run) rather than plotted separately, so the figures report one shared result
+across seeds instead of one result per seed.
+
 Usage
 -----
-python oa_budget.py  stats.npz  [options]
+python oa_budget.py  stats.npz  [stats2.npz  ...]  [options]
 
 Examples
 --------
-# Minimal — all defaults
+# Minimal — all defaults, single checkpoint
 python oa_budget.py  stats.npz
+
+# Pool three seeds of the same config into one result
+python oa_budget.py  oa3_seed0/stats.npz oa3_seed1/stats.npz oa3_seed2/stats.npz
 
 # Custom output directory and score threshold
 python oa_budget.py  stats.npz  --out_dir figs/budget  --score_thresh 1.2
@@ -68,7 +78,7 @@ class BudgetContext:
     """
 
     # ── I/O ───────────────────────────────────────────────────────────────────
-    stats_npz: str
+    stats_npz: list   # one or more .npz paths — seeds of the same config, pooled
     out_dir:   str
 
 
@@ -88,11 +98,14 @@ class BudgetContext:
     # ─────────────────────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
         # --- path validation --------------------------------------------------
-        if not os.path.isfile(self.stats_npz):
-            raise ValueError(f"stats_npz not found: {self.stats_npz!r}")
-        if not self.stats_npz.endswith(".npz"):
-            print(f"[warn] stats_npz does not have a .npz extension: "
-                  f"{self.stats_npz!r}")
+        if len(self.stats_npz) == 0:
+            raise ValueError("At least one stats_npz file must be given")
+        for path in self.stats_npz:
+            if not os.path.isfile(path):
+                raise ValueError(f"stats_npz not found: {path!r}")
+            if not path.endswith(".npz"):
+                print(f"[warn] stats_npz does not have a .npz extension: "
+                      f"{path!r}")
 
         out_parent = os.path.dirname(os.path.abspath(self.out_dir)) or "."
         if not os.path.isdir(out_parent):
@@ -129,7 +142,11 @@ class BudgetContext:
                 f"got {self.seq_dist_min}")
 
         # --- load and validate statistics ------------------------------------
-        self.stats = _load_stats(self.stats_npz)
+        stats_list = [_load_stats(path) for path in self.stats_npz]
+        self.stats = (
+            stats_list[0] if len(stats_list) == 1
+            else _merge_stats(stats_list, self.stats_npz)
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     @classmethod
@@ -145,8 +162,14 @@ class BudgetContext:
 
         # ── positional ────────────────────────────────────────────────────────
         p.add_argument(
-            "stats_npz",
-            help=".npz statistics file produced by stats.py",
+            "stats_npz", nargs="+",
+            help=(
+                ".npz statistics file(s) produced by stats.py. Pass several "
+                "paths — one per seed of the same architecture/config — to "
+                "pool their residues and edges into a single combined "
+                "result; all files must share the same number of encoder "
+                "layers."
+            ),
         )
 
         # ── output ────────────────────────────────────────────────────────────
@@ -238,6 +261,65 @@ def _load_stats(path: str) -> dict:
     stats["L"]       = L
     stats["is_self"] = raw["is_self"].astype(bool)
     return stats
+
+
+# Per-residue / per-edge layer-indexed keys that fig_budget_violin and
+# fig_neighbors_combined may read off a stats dict.
+_PER_RESIDUE_LAYER_KEYS = (
+    "neff", "alpha_self", "argmax_seq_dist", "argmax_dist_3d", "mean_score",
+)
+_PER_EDGE_LAYER_KEYS = ("attn", "rel_attn", "budget", "scored_attn")
+
+
+def _merge_stats(stats_list: list[dict], paths: list[str]) -> dict:
+    """
+    Pool statistics from multiple seeds of the same architecture/config into
+    a single combined dict, as if every residue and edge had come from one
+    larger run.
+
+    All inputs must share the same number of encoder layers ``L`` — the
+    figures compare layers positionally, so a mismatch would silently mix
+    unrelated layers.  ``res_idx`` is offset by the cumulative residue count
+    of the preceding files so indices stay unique after concatenation (the
+    per-residue ``bincount`` calls in the neighbourhood figures rely on this).
+    """
+    L = stats_list[0]["L"]
+    for path, s in zip(paths, stats_list):
+        if s["L"] != L:
+            raise ValueError(
+                f"All stats_npz files must share the same number of "
+                f"encoder layers to be pooled; {paths[0]!r} has L={L} but "
+                f"{path!r} has L={s['L']}")
+
+    modes = {str(s.get("mode", "unknown")) for s in stats_list}
+    if len(modes) > 1:
+        print(f"[budget] WARNING: pooling stats files with different "
+              f"'mode' values: {sorted(modes)}")
+
+    merged: dict = {
+        "L":          L,
+        "mode":       stats_list[0].get("mode", "unknown"),
+        "n_proteins": sum(int(s.get("n_proteins", 0)) for s in stats_list),
+        "valid_k":    np.concatenate([s["valid_k"] for s in stats_list]),
+        "is_self":    np.concatenate([s["is_self"] for s in stats_list]),
+        "seq_dist":   np.concatenate([s["seq_dist"] for s in stats_list]),
+    }
+
+    for key in _PER_RESIDUE_LAYER_KEYS + _PER_EDGE_LAYER_KEYS:
+        if all(key in s for s in stats_list):
+            merged[key] = [
+                np.concatenate([s[key][l] for s in stats_list])
+                for l in range(L)
+            ]
+
+    res_idx_parts = []
+    offset = 0
+    for s in stats_list:
+        res_idx_parts.append(s["res_idx"] + offset)
+        offset += len(s["valid_k"])
+    merged["res_idx"] = np.concatenate(res_idx_parts)
+
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -654,11 +736,16 @@ def main() -> None:
     n_edges = len(stats["is_self"])
     n_self  = int(stats["is_self"].sum())
 
+    n_seeds = len(ctx.stats_npz)
+    seeds_note = f"  seeds_pooled={n_seeds}" if n_seeds > 1 else ""
     print(
-        f"[budget] mode={mode}  layers={L}  "
+        f"[budget] mode={mode}  layers={L}{seeds_note}  "
         f"residues={n_res:,}  edges={n_edges:,}  "
         f"(self={n_self:,}  non-self={n_edges - n_self:,})"
     )
+    if n_seeds > 1:
+        for path in ctx.stats_npz:
+            print(f"  · {path}")
 
     if ctx.seq_dist_min > 1:
         n_pass = int(
