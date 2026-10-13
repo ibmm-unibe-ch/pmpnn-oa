@@ -18,6 +18,12 @@ Reads the .npz statistics file produced by stats.py and generates:
                                     whose budget-weighted score exceeds a threshold,
                                     with the same quartile and fraction annotations.
 
+  seed_medians.md                — markdown table of the per-layer non-self
+                                    budget median and the non-self neighbourhood
+                                    median for each input stats_npz file
+                                    individually, plus the combined "Pooled"
+                                    result when more than one file is given.
+
 No model weights or forward passes are required — all statistics are read from
 the pre-computed .npz file.
 
@@ -92,8 +98,13 @@ class BudgetContext:
     # ── sequence-distance filter ───────────────────────────────────────────────
     seq_dist_min: int       # minimum |i − j|; mirrors spectral analysis default
 
+    # ── seed labelling ────────────────────────────────────────────────────────
+    labels: list = None     # optional display label per stats_npz file
+
     # ── runtime (populated in __post_init__) ──────────────────────────────────
-    stats: dict = field(default=None, repr=False)
+    stats:       dict = field(default=None, repr=False)
+    seed_stats:  list = field(default=None, repr=False)
+    seed_labels: list = field(default=None, repr=False)
 
     # ─────────────────────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
@@ -141,8 +152,18 @@ class BudgetContext:
                 f"seq_dist_min must be >= 1 (self-edges always excluded), "
                 f"got {self.seq_dist_min}")
 
+        if self.labels is not None and len(self.labels) != len(self.stats_npz):
+            raise ValueError(
+                f"--labels must have the same length as stats_npz "
+                f"({len(self.stats_npz)}), got {len(self.labels)}")
+
         # --- load and validate statistics ------------------------------------
         stats_list = [_load_stats(path) for path in self.stats_npz]
+        self.seed_stats  = stats_list
+        self.seed_labels = (
+            list(self.labels) if self.labels is not None
+            else [_default_seed_label(p) for p in self.stats_npz]
+        )
         self.stats = (
             stats_list[0] if len(stats_list) == 1
             else _merge_stats(stats_list, self.stats_npz)
@@ -214,6 +235,14 @@ class BudgetContext:
                  "the neighbourhood counts.  Default 1 keeps all non-self edges.",
         )
 
+        # ── seed labelling ──────────────────────────────────────────────────────
+        p.add_argument(
+            "--labels", nargs="+", default=None,
+            help="Optional display label for each stats_npz file (same count "
+                 "and order), used in the per-seed median table. Defaults to "
+                 "the checkpoint/model directory name inferred from each path.",
+        )
+
         args = p.parse_args()
         return cls(**vars(args))
 
@@ -261,6 +290,79 @@ def _load_stats(path: str) -> dict:
     stats["L"]       = L
     stats["is_self"] = raw["is_self"].astype(bool)
     return stats
+
+
+# Parent-directory names that mean "this is an eval/output folder, not the
+# checkpoint name" — used to pick a sensible default seed label.  Matches the
+# models/<name>/eval/stats.npz layout used by scripts/*_exp2_finetuning.sbatch.
+_GENERIC_DIR_NAMES = {"eval", "stats", "output", "out", "results"}
+
+
+def _default_seed_label(path: str) -> str:
+    """Best-effort checkpoint/seed name for *path*, for table display only."""
+    abspath = os.path.abspath(path)
+    parent  = os.path.basename(os.path.dirname(abspath))
+    if parent.lower() in _GENERIC_DIR_NAMES:
+        grandparent = os.path.basename(os.path.dirname(os.path.dirname(abspath)))
+        if grandparent:
+            return grandparent
+    return parent or os.path.splitext(os.path.basename(path))[0]
+
+
+def _compute_k_total(stats: dict, seq_dist_min: int = 1) -> np.ndarray:
+    """Total non-self neighbourhood size per residue (see fig_neighbors_combined)."""
+    if seq_dist_min <= 1:
+        k_total = stats["valid_k"].astype(np.float32) - 1.0
+        return np.clip(k_total, 0, None)
+    is_self_r = stats["is_self"]
+    seq_dist  = stats["seq_dist"]
+    res_idx_r = stats["res_idx"]
+    mask      = (~is_self_r) & (seq_dist >= seq_dist_min)
+    n_res     = len(stats["valid_k"])
+    return np.bincount(res_idx_r[mask].astype(int),
+                       minlength=n_res).astype(np.float32)
+
+
+def _format_seed_median_table(
+    seed_stats: list[dict],
+    seed_labels: list[str],
+    L: int,
+    seq_dist_min: int,
+    pooled_stats: dict | None = None,
+) -> str:
+    """
+    Markdown table of per-seed medians: non-self budget (1 − α_self) per
+    layer — the same quantity as the Q2 line in fig_budget_violin.svg — plus
+    the median non-self neighbourhood size.  A trailing "Pooled" row (the
+    combined result actually plotted) is added when more than one seed is
+    given, so seed spread can be read directly off the table.
+    """
+    header = (
+        ["Seed"]
+        + [f"Layer {l + 1} budget (median)" for l in range(L)]
+        + ["Non-self neighbours (median)"]
+    )
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "|" + "|".join(["---"] * len(header)) + "|",
+    ]
+
+    def _row(label: str, stats: dict) -> str:
+        cells = [label]
+        for l in range(L):
+            budget_l = 1.0 - stats["alpha_self"][l].astype(np.float64)
+            cells.append(f"{float(np.median(budget_l)):.3g}")
+        k_total = _compute_k_total(stats, seq_dist_min)
+        cells.append(f"{float(np.median(k_total)):.3g}" if len(k_total) else "n/a")
+        return "| " + " | ".join(cells) + " |"
+
+    for label, stats in zip(seed_labels, seed_stats):
+        lines.append(_row(label, stats))
+
+    if pooled_stats is not None and len(seed_stats) > 1:
+        lines.append(_row("**Pooled**", pooled_stats))
+
+    return "\n".join(lines)
 
 
 # Per-residue / per-edge layer-indexed keys that fig_budget_violin and
@@ -526,17 +628,7 @@ def fig_neighbors_combined(
     L = stats["L"]
 
     # ── compute total neighbourhood size per residue ──────────────────────────
-    if seq_dist_min <= 1:
-        k_total = stats["valid_k"].astype(np.float32) - 1.0
-        k_total = np.clip(k_total, 0, None)
-    else:
-        is_self_r = stats["is_self"]
-        seq_dist  = stats["seq_dist"]
-        res_idx_r = stats["res_idx"]
-        mask      = (~is_self_r) & (seq_dist >= seq_dist_min)
-        n_res     = len(stats["valid_k"])
-        k_total   = np.bincount(res_idx_r[mask].astype(int),
-                                minlength=n_res).astype(np.float32)
+    k_total = _compute_k_total(stats, seq_dist_min)
 
     n_res_total = len(k_total)
 
@@ -744,8 +836,19 @@ def main() -> None:
         f"(self={n_self:,}  non-self={n_edges - n_self:,})"
     )
     if n_seeds > 1:
-        for path in ctx.stats_npz:
-            print(f"  · {path}")
+        for path, label in zip(ctx.stats_npz, ctx.seed_labels):
+            print(f"  · {label}: {path}")
+
+    print("[budget] Generating per-seed median table …")
+    table_md = _format_seed_median_table(
+        ctx.seed_stats, ctx.seed_labels, L, ctx.seq_dist_min,
+        pooled_stats=stats if n_seeds > 1 else None,
+    )
+    table_path = os.path.join(ctx.out_dir, "seed_medians.md")
+    with open(table_path, "w") as f:
+        f.write(table_md + "\n")
+    print(f"  saved {table_path}")
+    print(table_md)
 
     if ctx.seq_dist_min > 1:
         n_pass = int(
