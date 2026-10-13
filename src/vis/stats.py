@@ -30,13 +30,25 @@ Per-residue arrays  [total_residues]
   argmax_dist_3d_{l}  — 3-D dist.  of highest-α non-self neighbour
   mean_score_{l}    — mean budget-weighted score over non-self valid edges
 
-Per-edge arrays  [total_edges]  (all edges, incl. self)
+Per-edge arrays  [total_edges]  (all edges, incl. self; both modes)
   seq_dist          — |pos_i − pos_j|
-  dist_3d           — Cα–Cα Euclidean distance (Å)
   is_self           — bool, True when edge is a self-loop
   res_idx           — global residue id of source residue
   res_type_i        — amino-acid index of source residue
   res_type_j        — amino-acid index of neighbour residue
+  nbr_N             — neighbour N  coordinates in the source residue's local
+                       backbone frame (origin = source Cα)  [E, 3]
+  nbr_Ca            — neighbour Cα coordinates in the source residue's local
+                       backbone frame                        [E, 3]
+  nbr_C             — neighbour C  coordinates in the source residue's local
+                       backbone frame                        [E, 3]
+
+  The local frame is (e1, e2, e3) with e1 = normalize(Cα − N), e2 = normalize
+  (e1 × (C − Cα)), e3 = e1 × e2 (see ``backbone_frame`` in pmpnn.model) — it is
+  purely geometric (derived from X only), so these arrays are available for
+  both "oa" and "gat" mode files.  A 3-D Cα–Cα distance is simply
+  ``norm(nbr_Ca, axis=-1)``; the earlier scalar ``theta`` / ``phi`` / ``dist_3d``
+  encodings are fully recoverable from these vectors and are no longer stored.
 
 Per-edge, per-layer arrays  [total_edges]
   attn_{l}          — attention weight α_ij
@@ -44,15 +56,17 @@ Per-edge, per-layer arrays  [total_edges]
   budget_{l}        — non-self budget (1 − α_self_i) broadcast to edge
   scored_attn_{l}   — budget-weighted score: rel_α ^ budget
 
-OA only — per *non-self* edge arrays  [total_non_self_edges]
+OA only — per *non-self* edge, per-layer arrays  [total_non_self_edges]
   spectral_{l}      — spherical-harmonic spectral coefficients [E, S]
   scored_attn_ns_{l}— scored_attn restricted to non-self edges
-  theta             — polar angle from backbone e₁ axis  (rad, [0, π])
-  phi               — azimuthal angle in the e₂–e₃ plane (rad, [−π, π])
-  seq_dist_ns       — seq. dist. for non-self edges
-  dist_3d_ns        — 3-D dist.  for non-self edges
-  res_type_i_ns     — amino-acid index of source  (non-self edges only)
-  res_type_j_ns     — amino-acid index of neighbour (non-self edges only)
+
+  These two arrays are learned, per-layer quantities with no generic
+  counterpart, so they still live in a separate non-self-only pool.  Their
+  edge order matches ``nbr_* / seq_dist / res_type_*`` restricted with
+  ``~is_self`` (both pools are built by boolean-masking the same [N_v, K]
+  per-protein tensor), so e.g. ``seq_dist[~is_self]`` lines up with
+  ``spectral_{l}`` — no redundant ``*_ns`` copies of the generic arrays are
+  stored any more.
 """
 
 from __future__ import annotations
@@ -80,7 +94,7 @@ from pmpnn.constants import (
     PMPNN_NUM_ENCODER_LAYERS,
 )
 from pmpnn.data import _loader_h5, _to_pdb_dict
-from pmpnn.model import ProteinMPNN
+from pmpnn.model import ProteinMPNN, backbone_frame
 from pmpnn.preprocess import featurize
 
 
@@ -305,7 +319,6 @@ def _run_forward(model, pdb_dict, device, is_oa_mode: bool):
     mask_attend   : [1, N, K]
     attn_weights  : list of L tensors [1, N, K]
     spectral_layers  : list of L tensors [1, N, K, S]  or empty list for GAT
-    Y_out         : [1, N, K, S] raw spherical harmonics          or None for GAT
     """
     X, S, mask, _, chain_M, residue_idx, _, chain_encoding_all = featurize(
         [pdb_dict], device)
@@ -315,7 +328,6 @@ def _run_forward(model, pdb_dict, device, is_oa_mode: bool):
         X, S, mask,
         out.E_idx, out.mask_attend, out.attn_weights,
         out.spectral_layers if is_oa_mode else [],
-        out.Y if is_oa_mode else None,
     )
 
 
@@ -331,10 +343,15 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
     carry a ``_{l}`` suffix (0-indexed).  Two separate edge pools are
     maintained:
 
-    * **all-edge pool** — every valid edge (self included); the ``attn_*``,
-      ``rel_attn_*``, ``budget_*``, ``scored_attn_*`` arrays live here.
-    * **non-self-edge pool** — only ``non_self_valid`` edges; spectral, theta,
-      phi, and ``scored_attn_ns_*`` arrays live here (OA only).
+    * **all-edge pool** — every valid edge (self included); ``seq_dist``,
+      ``nbr_N/Ca/C`` (local-frame neighbour backbone coordinates), ``is_self``,
+      ``res_idx``, ``res_type_i/j``, and the ``attn_*``, ``rel_attn_*``,
+      ``budget_*``, ``scored_attn_*`` arrays live here.  This pool is
+      mode-independent — it only requires raw atom coordinates, so it is
+      populated for both "oa" and "gat" runs.
+    * **non-self-edge pool** — only ``non_self_valid`` edges; ``spectral_*``
+      and ``scored_attn_ns_*`` live here (OA only — these are learned,
+      per-layer quantities with no generic counterpart).
 
     Parameters
     ----------
@@ -366,27 +383,23 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
     all_argmax_dist_3d   = [[] for _ in range(L)]
     all_mean_score       = [[] for _ in range(L)]
 
-    # ── per-edge (all valid edges, incl. self) ─────────────────────────────────
+    # ── per-edge (all valid edges, incl. self; mode-independent) ──────────────
     all_attn             = [[] for _ in range(L)]
     all_rel_attn         = [[] for _ in range(L)]
     all_budget           = [[] for _ in range(L)]
     all_scored_attn      = [[] for _ in range(L)]
     all_seq_dist         = []
-    all_dist_3d          = []
     all_is_self          = []
     all_res_idx          = []
     all_res_type_i       = []
     all_res_type_j       = []
+    all_nbr_N            = []
+    all_nbr_Ca           = []
+    all_nbr_C            = []
 
     # ── per-edge (non-self only, OA mode) ─────────────────────────────────────
     all_spectral         = [[] for _ in range(L)]
     all_scored_attn_ns   = [[] for _ in range(L)]
-    all_theta            = []
-    all_phi              = []
-    all_seq_dist_ns      = []
-    all_dist_3d_ns       = []
-    all_res_type_i_ns    = []
-    all_res_type_j_ns    = []
 
     global_res_id = 0
     n_proteins    = 0
@@ -403,7 +416,7 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
         try:
             (X, S, mask,
              E_idx, mask_attend,
-             attn_weights, spectral_layers, Y_out) = _run_forward(
+             attn_weights, spectral_layers) = _run_forward(
                 model, pdb_dict, device, is_oa)
         except Exception as exc:
             print(f"skipped ({exc})")
@@ -421,23 +434,25 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
         non_self_valid = valid_edges & ~is_self_vk              # [N_v, K]
 
         # Geometric quantities
+        N_pos      = X[0, :, 0, :]
         Ca         = X[0, :, 1, :]
+        C_pos      = X[0, :, 2, :]
         Ca_j       = Ca[E_idx_v]                                           # [N_v, K, 3]
         dist_3d_vk = (Ca_j - Ca[n_indices].unsqueeze(1)).norm(dim=-1)     # [N_v, K]
         seq_dist_vk = (
             E_idx_v.long() - n_indices.unsqueeze(-1).long()
         ).abs().float()                                                     # [N_v, K]
 
-        # ── OA-specific: angles from l=1 SH channels ──────────────────────────
-        if is_oa:
-            Y_vk   = Y_out[0][valid_n]                         # [N_v, K, S]
-            inv_s3 = 1.0 / (3.0 ** 0.5)
-            # e3nn component-normalised: Y[1]=√3·e₂, Y[2]=√3·e₃, Y[3]=√3·e₁
-            d_e1      = (Y_vk[..., 3] * inv_s3).clamp(-1.0, 1.0)
-            d_e2      =  Y_vk[..., 1] * inv_s3
-            d_e3      =  Y_vk[..., 2] * inv_s3
-            theta_vk  = torch.acos(d_e1)           # polar angle [0, π]
-            phi_vk    = torch.atan2(d_e2, d_e3)    # azimuthal  [−π, π]
+        # ── mode-independent: neighbour N/Cα/C in the source local frame ──────
+        # Purely geometric (function of X only), so this applies to OA and GAT.
+        O_v    = backbone_frame(X)[0][valid_n]                 # [N_v, 3, 3]
+        Ca_i   = Ca[n_indices].unsqueeze(1)                     # [N_v, 1, 3]
+        rel_N  = N_pos[E_idx_v] - Ca_i                          # [N_v, K, 3]
+        rel_Ca = Ca_j           - Ca_i                          # [N_v, K, 3]
+        rel_C  = C_pos[E_idx_v] - Ca_i                          # [N_v, K, 3]
+        nbr_N_vk  = torch.einsum("vij,vkj->vki", O_v, rel_N)   # [N_v, K, 3]
+        nbr_Ca_vk = torch.einsum("vij,vkj->vki", O_v, rel_Ca)  # [N_v, K, 3]
+        nbr_C_vk  = torch.einsum("vij,vkj->vki", O_v, rel_C)   # [N_v, K, 3]
 
         # K_non_self is topology-only: it does not change across layers
         K_non_self = non_self_valid.float().sum(-1).clamp(min=1.0)  # [N_v]
@@ -492,10 +507,12 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
                 all_spectral[l].append(sp_vk[non_self_valid].cpu().numpy())
                 all_scored_attn_ns[l].append(scored_vk[non_self_valid].cpu().numpy())
 
-        # ── per-edge (all valid edges, layer-independent) ─────────────────────
+        # ── per-edge (all valid edges, layer-independent, mode-independent) ───
         all_seq_dist.append(seq_dist_vk[valid_edges].cpu().numpy())
-        all_dist_3d.append(dist_3d_vk[valid_edges].cpu().numpy())
         all_is_self.append(is_self_vk[valid_edges].cpu().numpy())
+        all_nbr_N.append(nbr_N_vk[valid_edges].cpu().numpy())
+        all_nbr_Ca.append(nbr_Ca_vk[valid_edges].cpu().numpy())
+        all_nbr_C.append(nbr_C_vk[valid_edges].cpu().numpy())
 
         type_i_vk = S[0][n_indices].unsqueeze(-1).expand_as(E_idx_v)  # [N_v, K]
         type_j_vk = S[0][E_idx_v]                                      # [N_v, K]
@@ -507,15 +524,6 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
             .unsqueeze(-1).expand_as(E_idx_v)
         )
         all_res_idx.append(res_id_vk[valid_edges].cpu().numpy())
-
-        # ── OA: non-self edge geometry ─────────────────────────────────────────
-        if is_oa:
-            all_theta.append(theta_vk[non_self_valid].cpu().numpy())
-            all_phi.append(phi_vk[non_self_valid].cpu().numpy())
-            all_seq_dist_ns.append(seq_dist_vk[non_self_valid].cpu().numpy())
-            all_dist_3d_ns.append(dist_3d_vk[non_self_valid].cpu().numpy())
-            all_res_type_i_ns.append(type_i_vk[non_self_valid].cpu().numpy())
-            all_res_type_j_ns.append(type_j_vk[non_self_valid].cpu().numpy())
 
         global_res_id += N_v
         n_proteins    += 1
@@ -538,13 +546,15 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
         # per-residue
         "valid_k":         np.concatenate(all_valid_k).astype(np.float32),
 
-        # per-edge (all valid, incl. self)
+        # per-edge (all valid, incl. self; mode-independent)
         "seq_dist":        np.concatenate(all_seq_dist).astype(np.float32),
-        "dist_3d":         np.concatenate(all_dist_3d).astype(np.float32),
         "is_self":         np.concatenate(all_is_self).astype(bool),
         "res_idx":         np.concatenate(all_res_idx).astype(np.int64),
         "res_type_i":      np.concatenate(all_res_type_i).astype(np.int8),
         "res_type_j":      np.concatenate(all_res_type_j).astype(np.int8),
+        "nbr_N":           np.concatenate(all_nbr_N,  axis=0).astype(np.float32),
+        "nbr_Ca":          np.concatenate(all_nbr_Ca, axis=0).astype(np.float32),
+        "nbr_C":           np.concatenate(all_nbr_C,  axis=0).astype(np.float32),
     }
 
     for l in range(L):
@@ -565,15 +575,6 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
             # per non-self edge, per-layer
             out[f"spectral_{l}"]        = np.concatenate(all_spectral[l], axis=0).astype(np.float32)
             out[f"scored_attn_ns_{l}"]  = np.concatenate(all_scored_attn_ns[l]).astype(np.float32)
-
-    if is_oa:
-        # per non-self edge, layer-independent
-        out["theta"]         = np.concatenate(all_theta).astype(np.float32)
-        out["phi"]           = np.concatenate(all_phi).astype(np.float32)
-        out["seq_dist_ns"]   = np.concatenate(all_seq_dist_ns).astype(np.float32)
-        out["dist_3d_ns"]    = np.concatenate(all_dist_3d_ns).astype(np.float32)
-        out["res_type_i_ns"] = np.concatenate(all_res_type_i_ns).astype(np.int8)
-        out["res_type_j_ns"] = np.concatenate(all_res_type_j_ns).astype(np.int8)
 
     return out
 
@@ -608,9 +609,11 @@ def _print_summary(stats: dict) -> None:
               f"mean_α_self={mean_aself:.3f}  "
               f"mean_score={mean_score:.3f}")
 
-    if "theta" in stats:
-        n_ns = len(stats["theta"])
+    if "spectral_0" in stats:
+        n_ns = len(stats["spectral_0"])
         print(f"  non-self edges  : {n_ns:,}  (spectral arrays)")
+    print(f"  nbr_Ca (local)  : shape {stats['nbr_Ca'].shape}  "
+          f"(mean |nbr_Ca| = {np.linalg.norm(stats['nbr_Ca'], axis=-1).mean():.2f} Å)")
     print(f"{'─' * 60}\n")
 
 

@@ -62,11 +62,15 @@ _DEGREE_LABELS = ["$\\ell=0$", "$\\ell=1$", "$\\ell=2$"]
 
 def load_stats(path: str) -> dict:
     """
-    Load a .npz file produced by stats.py and return the arrays needed for
-    the spectral PCA.
+    Load a .npz file produced by stats.py (mode=oa) and return the arrays
+    needed for the spectral PCA.
 
-    Accepts both the current stats.py convention (non-self arrays carry a
-    ``_ns`` suffix) and older files without it.
+    ``spectral_{l}`` is a learned, per-layer OA-only quantity with no generic
+    counterpart, so it still lives in its own non-self-edge pool.  The
+    distance / sequential-separation filters, however, are derived from the
+    generic, mode-independent ``nbr_Ca`` / ``seq_dist`` arrays restricted to
+    non-self edges via ``~is_self`` — both pools are built by boolean-masking
+    the same per-protein [N_v, K] tensor, so the edge order lines up exactly.
 
     Returns
     -------
@@ -83,25 +87,23 @@ def load_stats(path: str) -> dict:
     L    = int(raw["L"])
     n_sh = int(raw["n_sh"]) if "n_sh" in keys else _infer_n_sh(raw, L)
 
-    def _get(key_ns, key_fallback):
-        if key_ns in keys:
-            return raw[key_ns]
-        if key_fallback in keys:
-            return raw[key_fallback]
-        raise KeyError(f"Neither '{key_ns}' nor '{key_fallback}' found in {path}")
+    if "spectral_0" not in keys:
+        raise KeyError(
+            f"Key 'spectral_0' not found in {path}.  "
+            "Make sure the .npz was produced by stats.py in 'oa' mode."
+        )
+    if "nbr_Ca" not in keys:
+        raise KeyError(
+            f"Key 'nbr_Ca' not found in {path}.  "
+            "This script requires a stats.py output produced after the "
+            "local-frame neighbour-coordinate rework — re-run stats.py."
+        )
 
-    dist_3d  = _get("dist_3d_ns",  "dist_3d")
-    seq_dist = _get("seq_dist_ns", "seq_dist")
+    non_self = ~raw["is_self"].astype(bool)
+    dist_3d  = np.linalg.norm(raw["nbr_Ca"][non_self], axis=-1)
+    seq_dist = raw["seq_dist"][non_self]
 
-    spectral = []
-    for l in range(L):
-        sp_key = f"spectral_{l}"
-        if sp_key not in keys:
-            raise KeyError(
-                f"Key '{sp_key}' not found in {path}.  "
-                "Make sure the .npz was produced by stats.py in 'oa' mode."
-            )
-        spectral.append(raw[sp_key].astype(np.float32))
+    spectral = [raw[f"spectral_{l}"].astype(np.float32) for l in range(L)]
 
     return {
         "L":        L,

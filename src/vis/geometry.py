@@ -1,9 +1,8 @@
 """
-pmpnn-oa-geometry.py — (d, θ, φ) geometry maps and volumetric export for
-ProteinMPNN-OA.
+geometry.py — (d, θ, φ) geometry maps and volumetric export for ProteinMPNN
+encoders with attention (OA or GAT).
 
-Reads the .npz statistics file produced by stats.py (OA mode required) and
-generates:
+Reads the .npz statistics file produced by stats.py and generates:
 
   fig_geometry_scatter_layerN.svg  — lower-triangular 3×3 pairs plot of the
                                       geometric axes (d, θ, φ).  Off-diagonal
@@ -60,37 +59,41 @@ filters all outputs to the specified (source AA, neighbour AA) pair and produces
 No model weights or forward passes are required — all geometry is read from the
 pre-computed .npz file.
 
-This script only processes OA-mode statistics files.  If the .npz was produced
-with ``mode=gat`` (no theta / phi arrays), the script exits with a clear error.
+This script works on statistics files produced by stats.py in either "oa" or
+"gat" mode — geometry (d, θ, φ) comes from the per-edge, mode-independent
+``nbr_N/Ca/C`` local-frame neighbour coordinates, and score comes from the
+generic ``attn_* / rel_attn_* / budget_* / scored_attn_*`` per-edge arrays.
+If the .npz predates those arrays (an older stats.py), the script exits with
+a clear error asking for a re-run of stats.py.
 
 Usage
 -----
-python oa_geometry.py  stats.npz  [options]
+python geometry.py  stats.npz  [options]
 
 Examples
 --------
 # Minimal — all defaults
-python oa_geometry.py  stats.npz
+python geometry.py  stats.npz
 
 # Custom output directory and resolution
-python oa_geometry.py  stats.npz  --out_dir figs/geometry  --vol_n_bins 80
+python geometry.py  stats.npz  --out_dir figs/geometry  --vol_n_bins 80
 
 # Exclude local contacts (|i−j| < 6)
-python oa_geometry.py  stats.npz  --seq_dist_min 6
+python geometry.py  stats.npz  --seq_dist_min 6
 
 # Tight score range and fine grid
-python oa_geometry.py  stats.npz  \\
+python geometry.py  stats.npz  \\
     --score_vmin 0.6  --score_vmax 1.8  \\
     --vol_n_bins 96  --r_max 18.0
 
 # Skip volumetric export (figures only)
-python oa_geometry.py  stats.npz  --no_vol
+python geometry.py  stats.npz  --no_vol
 
 # Pair-specific map and enrichment (Cys → Cys)
-python oa_geometry.py  stats.npz  --source_aa C  --neighbour_aa C
+python geometry.py  stats.npz  --source_aa C  --neighbour_aa C
 
 # Pair-specific, figures only
-python oa_geometry.py  stats.npz  --source_aa C  --neighbour_aa C  --no_vol
+python geometry.py  stats.npz  --source_aa C  --neighbour_aa C  --no_vol
 """
 from __future__ import annotations
 
@@ -229,8 +232,8 @@ class GeometryContext:
         p = argparse.ArgumentParser(
             description=(
                 "Generate (d, θ, φ) geometry maps and volumetric files from "
-                "ProteinMPNN-OA statistics produced by stats.py.  "
-                "OA-mode .npz required (theta / phi arrays must be present)."
+                "ProteinMPNN statistics produced by stats.py.  Works for any "
+                "encoder that records attention (mode=oa or mode=gat)."
             ),
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         )
@@ -238,7 +241,7 @@ class GeometryContext:
         # ── positional ────────────────────────────────────────────────────────
         p.add_argument(
             "stats_npz",
-            help=".npz statistics file produced by stats.py (mode=oa)",
+            help=".npz statistics file produced by stats.py (mode=oa or mode=gat)",
         )
 
         # ── output ────────────────────────────────────────────────────────────
@@ -340,21 +343,27 @@ class GeometryContext:
 
 def _load_stats(path: str) -> dict:
     """
-    Load a .npz file produced by stats.py and reconstruct per-layer lists.
+    Load a .npz file produced by stats.py, derive the (d, θ, φ) non-self-edge
+    geometry pool from the mode-independent ``nbr_N/Ca/C`` local-frame
+    coordinates, and reconstruct the per-layer list arrays.
+
+    Works for any mode ("oa" or "gat") — ``nbr_Ca`` and the generic
+    ``attn_* / scored_attn_*`` arrays are produced regardless of encoder type.
 
     Raises
     ------
     ValueError
-        If the file was produced in GAT mode (no theta / phi arrays present).
+        If the file predates the ``nbr_Ca`` per-edge array (produced by an
+        older stats.py that only emitted OA-only ``theta`` / ``phi``).
 
     Returns
     -------
-    dict with keys (OA mode):
+    dict with keys:
       ``L``                — int, number of encoder layers
-      ``mode``             — str, "oa"
-      ``theta``            — float32 [total_non_self_edges]
-      ``phi``              — float32 [total_non_self_edges]
-      ``dist_3d_ns``       — float32 [total_non_self_edges]
+      ``mode``             — str, "oa" | "gat"
+      ``theta``            — float32 [total_non_self_edges]  polar angle from e₁
+      ``phi``              — float32 [total_non_self_edges]  azimuthal angle
+      ``dist_3d_ns``       — float32 [total_non_self_edges]  |nbr_Ca|
       ``seq_dist_ns``      — float32 [total_non_self_edges]
       ``res_type_i_ns``    — int8    [total_non_self_edges]
       ``res_type_j_ns``    — int8    [total_non_self_edges]
@@ -365,21 +374,36 @@ def _load_stats(path: str) -> dict:
     L   = int(raw["L"])
     mode = str(raw["mode"])
 
-    if "theta" not in raw:
+    if "nbr_Ca" not in raw:
         raise ValueError(
-            f"stats file {path!r} does not contain 'theta' / 'phi' arrays.  "
-            f"Only OA-mode statistics are supported by this script "
-            f"(mode found: {mode!r}).  "
-            f"Re-run stats.py with --mode oa."
+            f"stats file {path!r} does not contain the 'nbr_Ca' per-edge "
+            f"array.  This script requires a stats.py output produced after "
+            f"the local-frame neighbour-coordinate rework — re-run stats.py "
+            f"(mode found: {mode!r})."
         )
 
     stats: dict = dict(raw)
 
+    is_self  = raw["is_self"].astype(bool)
+    non_self = ~is_self
+
+    nbr_Ca = raw["nbr_Ca"][non_self]                              # [E_ns, 3]
+    dist   = np.linalg.norm(nbr_Ca, axis=-1)
+    d_hat  = nbr_Ca / np.clip(dist, 1e-8, None)[:, None]
+    theta  = np.arccos(np.clip(d_hat[:, 0], -1.0, 1.0))           # polar  [0, π]
+    phi    = np.arctan2(d_hat[:, 1], d_hat[:, 2])                 # azim.  [−π, π]
+
+    stats["theta"]         = theta.astype(np.float32)
+    stats["phi"]           = phi.astype(np.float32)
+    stats["dist_3d_ns"]    = dist.astype(np.float32)
+    stats["seq_dist_ns"]   = raw["seq_dist"][non_self].astype(np.float32)
+    stats["res_type_i_ns"] = raw["res_type_i"][non_self].astype(np.int8)
+    stats["res_type_j_ns"] = raw["res_type_j"][non_self].astype(np.int8)
+
     # Rebuild the per-layer list arrays
     for key in (
         "neff", "alpha_self", "argmax_seq_dist", "argmax_dist_3d",
-        "attn", "rel_attn", "budget", "scored_attn",
-        "mean_score", "spectral", "scored_attn_ns",
+        "attn", "rel_attn", "budget", "scored_attn", "mean_score",
     ):
         layer_arrays = []
         for l in range(L):
@@ -389,12 +413,16 @@ def _load_stats(path: str) -> dict:
         if layer_arrays:
             stats[key] = layer_arrays
 
-    stats["L"]    = L
-    stats["mode"] = mode
+    # scored_attn restricted to non-self edges — derived from the generic
+    # per-edge scored_attn_{l} (available for both modes), not an OA-only
+    # scored_attn_ns_{l} array.
+    stats["scored_attn_ns"] = [
+        raw[f"scored_attn_{l}"][non_self] for l in range(L)
+    ]
 
-    # Boolean flag for downstream convenience
-    if "is_self" in raw:
-        stats["is_self"] = raw["is_self"].astype(bool)
+    stats["L"]       = L
+    stats["mode"]    = mode
+    stats["is_self"] = is_self
 
     return stats
 
@@ -840,7 +868,7 @@ def _write_cxc(
     pdb_model = f"#{next_model}" if pdb_path else None
 
     lines = [
-        "# ChimeraX session script generated by oa_geometry.py",
+        "# ChimeraX session script generated by geometry.py",
         f"# Pair: {src_label} → {nbr_label}",
         "# Axes (local backbone frame, origin = source Cα):",
         "#   x → e₁ (backbone direction)   y → e₂   z → e₃",

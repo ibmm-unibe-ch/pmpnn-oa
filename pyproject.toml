@@ -35,7 +35,7 @@ pmpnn-stats     = "vis.stats:main"
 pmpnn-budget    = "vis.budget:main"
 pmpnn-aa_heatmaps = "vis.aa_heatmaps:main"
 pmpnn-oa_spectral = "vis.oa_spectral:main"
-pmpnn-oa_geometry = "vis.oa_geometry:main"
+pmpnn-geometry  = "vis.geometry:main"
 pmpnn-to_h5     = "data.to_h5:main"
 
 [tool.uv.sources]
