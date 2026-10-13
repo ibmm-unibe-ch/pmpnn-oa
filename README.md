@@ -93,6 +93,6 @@ pmpnn-stats data/pdb_2021aug02.h5 index/test_monomers.txt \
 ```bash
 pmpnn-budget stats.npz
 pmpnn-aa_heatmaps stats.npz
-pmpnn-oa_geometry stats.npz
+pmpnn-geometry stats.npz
 pmpnn-oa_spectral stats.npz
 ```
