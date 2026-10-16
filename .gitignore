@@ -15,11 +15,13 @@ wheels/
 # uv.lock is intentionally tracked
 
 # ── Downloaded assets (see Makefile: `make data`, `make ckpt`) ────────────
-/data/
-/ckpt/
+data/
+index/
+ckpt/
 *.tar.gz
 
 # ── Model weights & training state ────────────────────────────────────────
+models/
 *.pt
 *.pth
 *.safetensors
@@ -43,3 +45,6 @@ slurm-*.out
 /scratch/
 /tmp/
 .DS_Store
+
+# Scripts (to add later to git)
+scripts/
