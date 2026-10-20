@@ -48,3 +48,4 @@ slurm-*.out
 
 # Scripts (to add later to git)
 scripts/
+*.sbatch

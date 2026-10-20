@@ -23,19 +23,26 @@ dependencies = [
     "wandb==0.25.1",
     "transformers",
     "accelerate",
-    "matplotlib"
+    "matplotlib",
+    "ipykernel>=7.4.0",
+    "pandas>=2.3.3",
+    "scikit-learn>=1.7.2",
 ]
 
 [project.scripts]
 pmpnn-train     = "train.__main__:main"
 pmpnn-eval      = "eval.__main__:main"
 pmpnn-gen       = "gen.__main__:main"
+pmpnn-to_boltz  = "gen.to_boltz:main"
 pmpnn-esmfold   = "esmfold.__main__:main"
 pmpnn-stats     = "vis.stats:main"
 pmpnn-budget    = "vis.budget:main"
 pmpnn-aa_heatmaps = "vis.aa_heatmaps:main"
 pmpnn-oa_spectral = "vis.oa_spectral:main"
 pmpnn-geometry  = "vis.geometry:main"
+pmpnn-enrichment = "vis.enrichment:main"
+pmpnn-metrics   = "vis.metrics:main"
+pmpnn-vis       = "vis.__main__:main"
 pmpnn-to_h5     = "data.to_h5:main"
 
 [tool.uv.sources]

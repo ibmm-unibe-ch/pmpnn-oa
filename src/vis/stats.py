@@ -33,7 +33,17 @@ Per-residue arrays  [total_residues]
 Per-edge arrays  [total_edges]  (all edges, incl. self; both modes)
   seq_dist          — |pos_i − pos_j|
   is_self           — bool, True when edge is a self-loop
-  res_idx           — global residue id of source residue
+  res_idx           — global residue id of source residue (monotonic across the whole
+                       run; does NOT reset per protein)
+  nbr_res_idx       — global residue id of the NEIGHBOUR residue, in the same id space
+                       as res_idx (identity, not just its looked-up amino-acid type) —
+                       needed to look a residue up consistently wherever it appears
+                       (as a source on some rows, as a neighbour on others), e.g. for
+                       an amino-acid-label permutation test
+  protein_idx       — global protein id of source residue (0-indexed in processing
+                       order) — the clustering unit for protein-level bootstraps, since
+                       residues within one protein share structural context and res_idx
+                       alone does not identify which protein a residue came from
   res_type_i        — amino-acid index of source residue
   res_type_j        — amino-acid index of neighbour residue
   nbr_N             — neighbour N  coordinates in the source residue's local
@@ -391,6 +401,8 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
     all_seq_dist         = []
     all_is_self          = []
     all_res_idx          = []
+    all_nbr_res_idx      = []
+    all_protein_idx      = []
     all_res_type_i       = []
     all_res_type_j       = []
     all_nbr_N            = []
@@ -432,6 +444,15 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
 
         is_self_vk     = (E_idx_v == n_indices.unsqueeze(-1))   # [N_v, K]
         non_self_valid = valid_edges & ~is_self_vk              # [N_v, K]
+
+        # neighbour's own global residue id (matches the running `res_idx` convention):
+        # E_idx_v holds padded-array indices [0, N) — map each to its rank among the
+        # valid residues of this protein, then offset by global_res_id. Needed to look
+        # up a residue consistently wherever it appears (as source or as neighbour),
+        # e.g. for an amino-acid-label permutation test.
+        rank_of_padded_idx = torch.full((X.shape[1],), -1, dtype=torch.long, device=device)
+        rank_of_padded_idx[n_indices] = torch.arange(N_v, device=device)
+        nbr_res_id_vk = global_res_id + rank_of_padded_idx[E_idx_v]   # [N_v, K]
 
         # Geometric quantities
         N_pos      = X[0, :, 0, :]
@@ -524,6 +545,13 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
             .unsqueeze(-1).expand_as(E_idx_v)
         )
         all_res_idx.append(res_id_vk[valid_edges].cpu().numpy())
+        all_nbr_res_idx.append(nbr_res_id_vk[valid_edges].cpu().numpy())
+
+        # protein identity per edge — the clustering unit for protein-level bootstraps
+        # (residues within a protein share structural context; res_idx alone does not
+        # identify which protein a residue came from, since it never resets).
+        protein_id_vk = torch.full_like(res_id_vk, n_proteins)
+        all_protein_idx.append(protein_id_vk[valid_edges].cpu().numpy())
 
         global_res_id += N_v
         n_proteins    += 1
@@ -550,6 +578,8 @@ def accumulate(ctx: StatsContext, pdb_chains: List[str]) -> dict:
         "seq_dist":        np.concatenate(all_seq_dist).astype(np.float32),
         "is_self":         np.concatenate(all_is_self).astype(bool),
         "res_idx":         np.concatenate(all_res_idx).astype(np.int64),
+        "nbr_res_idx":     np.concatenate(all_nbr_res_idx).astype(np.int64),
+        "protein_idx":     np.concatenate(all_protein_idx).astype(np.int64),
         "res_type_i":      np.concatenate(all_res_type_i).astype(np.int8),
         "res_type_j":      np.concatenate(all_res_type_j).astype(np.int8),
         "nbr_N":           np.concatenate(all_nbr_N,  axis=0).astype(np.float32),

@@ -321,6 +321,17 @@ def _load_stats(path: str) -> dict:
 
     stats: dict = dict(raw)
 
+    if "dist_3d" not in stats:
+        # Post local-frame-rework stats.py no longer emits a flat ``dist_3d``
+        # array — derive it from the per-edge neighbour-Cα offset instead
+        # (same derivation as vis.geometry._load_stats).
+        if "nbr_Ca" not in raw:
+            raise ValueError(
+                f"stats file {path!r} has neither 'dist_3d' nor 'nbr_Ca' — "
+                f"re-run stats.py to produce a compatible file."
+            )
+        stats["dist_3d"] = np.linalg.norm(raw["nbr_Ca"], axis=-1).astype(np.float32)
+
     # Rebuild the per-layer list arrays
     for key in (
         "neff", "alpha_self", "argmax_seq_dist", "argmax_dist_3d",

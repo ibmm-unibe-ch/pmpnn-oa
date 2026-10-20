@@ -66,14 +66,24 @@ generic ``attn_* / rel_attn_* / budget_* / scored_attn_*`` per-edge arrays.
 If the .npz predates those arrays (an older stats.py), the script exits with
 a clear error asking for a re-run of stats.py.
 
+Multiple ``.npz`` files may be given at once — one per seed of the same
+architecture/config (e.g. ``oa3_seed0``, ``oa3_seed1``, ``oa3_seed2``).  All
+files must share the same number of encoder layers; their non-self edges are
+pooled into a single combined geometry pool (as if they came from one larger
+run) rather than plotted separately, so the figures and volumes report one
+shared result across seeds instead of one result per seed.
+
 Usage
 -----
-python geometry.py  stats.npz  [options]
+python geometry.py  stats.npz  [stats2.npz  ...]  [options]
 
 Examples
 --------
-# Minimal — all defaults
+# Minimal — all defaults, single checkpoint
 python geometry.py  stats.npz
+
+# Pool three seeds of the same config into one result
+python geometry.py  oa3_seed0/stats.npz oa3_seed1/stats.npz oa3_seed2/stats.npz
 
 # Custom output directory and resolution
 python geometry.py  stats.npz  --out_dir figs/geometry  --vol_n_bins 80
@@ -94,6 +104,9 @@ python geometry.py  stats.npz  --source_aa C  --neighbour_aa C
 
 # Pair-specific, figures only
 python geometry.py  stats.npz  --source_aa C  --neighbour_aa C  --no_vol
+
+# Multiple source/neighbour AAs (matched as a set, e.g. any hydrophobic residue)
+python geometry.py  stats.npz  --source_aa A V L I M F  --neighbour_aa C
 """
 from __future__ import annotations
 
@@ -116,6 +129,22 @@ _AA_ALPHABET = list("ACDEFGHIKLMNPQRSTVWY")
 _AA_INDEX    = {aa: i for i, aa in enumerate(_AA_ALPHABET)}
 
 
+def _aa_tag(aas: list[str] | None) -> str:
+    """Compact, filename-safe label for a (possibly multi-AA) filter: the
+    sorted, deduplicated one-letter codes concatenated (e.g. ``"C"``,
+    ``"AFILMV"``), or ``"all"`` when *aas* is None.  Reduces to the plain
+    single-letter code when only one AA is given, matching the pre-existing
+    single-AA filenames.
+    """
+    return "".join(sorted(set(aas))) if aas else "all"
+
+
+def _aa_display(aas: list[str] | None) -> str:
+    """Human-readable label for a (possibly multi-AA) filter, used in figure
+    titles (e.g. ``"C"``, ``"A,F,I,L,M,V"``, or ``"all"``)."""
+    return ",".join(sorted(set(aas))) if aas else "all"
+
+
 # ---------------------------------------------------------------------------
 # Context — configuration + validated CLI parsing
 # ---------------------------------------------------------------------------
@@ -129,7 +158,7 @@ class GeometryContext:
     """
 
     # ── I/O ───────────────────────────────────────────────────────────────────
-    stats_npz: str
+    stats_npz: list   # one or more .npz paths — seeds of the same config, pooled
     out_dir:   str
 
     # ── geometry scatter — score colorscale ───────────────────────────────────
@@ -148,8 +177,8 @@ class GeometryContext:
     seq_dist_min: int       # minimum |i − j|; mirrors spectral analysis default
 
     # ── residue-pair filter (optional) ────────────────────────────────────────
-    source_aa:    str | None   # one-letter code for the source residue, or None
-    neighbour_aa: str | None   # one-letter code for the neighbour residue, or None
+    source_aa:    list | None   # one-letter codes for the source residue, or None
+    neighbour_aa: list | None   # one-letter codes for the neighbour residue, or None
 
     # ── volumetric export ─────────────────────────────────────────────────────
     export_vol: bool        # whether to write MRC + CXC files
@@ -162,11 +191,14 @@ class GeometryContext:
     # ─────────────────────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
         # --- path validation --------------------------------------------------
-        if not os.path.isfile(self.stats_npz):
-            raise ValueError(f"stats_npz not found: {self.stats_npz!r}")
-        if not self.stats_npz.endswith(".npz"):
-            print(f"[warn] stats_npz does not have a .npz extension: "
-                  f"{self.stats_npz!r}")
+        if len(self.stats_npz) == 0:
+            raise ValueError("At least one stats_npz file must be given")
+        for path in self.stats_npz:
+            if not os.path.isfile(path):
+                raise ValueError(f"stats_npz not found: {path!r}")
+            if not path.endswith(".npz"):
+                print(f"[warn] stats_npz does not have a .npz extension: "
+                      f"{path!r}")
 
         out_parent = os.path.dirname(os.path.abspath(self.out_dir)) or "."
         if not os.path.isdir(out_parent):
@@ -200,22 +232,19 @@ class GeometryContext:
                 f"got {self.seq_dist_min}")
 
         # --- residue-pair validation ------------------------------------------
-        if self.source_aa is not None:
-            self.source_aa = self.source_aa.upper()
-            if self.source_aa not in _AA_INDEX:
-                raise ValueError(
-                    f"source_aa must be a one-letter amino-acid code, "
-                    f"got {self.source_aa!r}.  "
-                    f"Valid codes: {''.join(_AA_ALPHABET)}"
-                )
-        if self.neighbour_aa is not None:
-            self.neighbour_aa = self.neighbour_aa.upper()
-            if self.neighbour_aa not in _AA_INDEX:
-                raise ValueError(
-                    f"neighbour_aa must be a one-letter amino-acid code, "
-                    f"got {self.neighbour_aa!r}.  "
-                    f"Valid codes: {''.join(_AA_ALPHABET)}"
-                )
+        for attr in ("source_aa", "neighbour_aa"):
+            aas = getattr(self, attr)
+            if aas is None:
+                continue
+            aas = [aa.upper() for aa in aas]
+            for aa in aas:
+                if aa not in _AA_INDEX:
+                    raise ValueError(
+                        f"{attr} must be one-letter amino-acid codes, "
+                        f"got {aa!r}.  "
+                        f"Valid codes: {''.join(_AA_ALPHABET)}"
+                    )
+            setattr(self, attr, aas)
 
         if self.r_max <= 0:
             raise ValueError(f"r_max must be > 0, got {self.r_max}")
@@ -223,7 +252,11 @@ class GeometryContext:
             raise ValueError(f"vol_n_bins must be >= 8, got {self.vol_n_bins}")
 
         # --- load and validate statistics ------------------------------------
-        self.stats = _load_stats(self.stats_npz)
+        stats_list = [_load_stats(path) for path in self.stats_npz]
+        self.stats = (
+            stats_list[0] if len(stats_list) == 1
+            else _merge_stats(stats_list, self.stats_npz)
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     @classmethod
@@ -240,8 +273,14 @@ class GeometryContext:
 
         # ── positional ────────────────────────────────────────────────────────
         p.add_argument(
-            "stats_npz",
-            help=".npz statistics file produced by stats.py (mode=oa or mode=gat)",
+            "stats_npz", nargs="+",
+            help=(
+                ".npz statistics file(s) produced by stats.py (mode=oa or "
+                "mode=gat). Pass several paths — one per seed of the same "
+                "architecture/config — to pool their non-self edges into a "
+                "single combined result; all files must share the same "
+                "number of encoder layers."
+            ),
         )
 
         # ── output ────────────────────────────────────────────────────────────
@@ -300,18 +339,19 @@ class GeometryContext:
             "Residue-pair filter",
             "When source_aa and/or neighbour_aa are given, all scatter figures "
             "and volumes are additionally restricted to the specified "
-            "(source AA → neighbour AA) pair.  Pair-specific scatter figures "
-            "and an enrichment map vs the full background are produced alongside "
-            "the unfiltered outputs.",
+            "(source AA(s) → neighbour AA(s)) pair.  Pair-specific scatter "
+            "figures and an enrichment map vs the full background are "
+            "produced alongside the unfiltered outputs.",
         )
         pr.add_argument(
-            "--source_aa", default=None, metavar="AA",
-            help="One-letter code for the source (central) residue "
-                 "(e.g. C for cysteine).  Case-insensitive.",
+            "--source_aa", nargs="+", default=None, metavar="AA",
+            help="One or more one-letter codes for the source (central) "
+                 "residue (e.g. C for cysteine, or A V L I M F for a set of "
+                 "hydrophobic residues — matched as 'any of').  Case-insensitive.",
         )
         pr.add_argument(
-            "--neighbour_aa", default=None, metavar="AA",
-            help="One-letter code for the neighbour residue.  "
+            "--neighbour_aa", nargs="+", default=None, metavar="AA",
+            help="One or more one-letter codes for the neighbour residue.  "
                  "Case-insensitive.",
         )
 
@@ -399,6 +439,10 @@ def _load_stats(path: str) -> dict:
     stats["seq_dist_ns"]   = raw["seq_dist"][non_self].astype(np.float32)
     stats["res_type_i_ns"] = raw["res_type_i"][non_self].astype(np.int8)
     stats["res_type_j_ns"] = raw["res_type_j"][non_self].astype(np.int8)
+    # source-residue id per non-self edge — the natural clustering unit for a
+    # residue-level (block) bootstrap: a residue's K neighbour edges share its
+    # query/local context and are not independent samples.
+    stats["res_idx_ns"]    = raw["res_idx"][non_self].astype(np.int64)
 
     # Rebuild the per-layer list arrays
     for key in (
@@ -425,6 +469,64 @@ def _load_stats(path: str) -> dict:
     stats["is_self"] = is_self
 
     return stats
+
+
+# Non-self-edge, layer-independent keys pooled verbatim across seeds.
+_NS_FLAT_KEYS = (
+    "theta", "phi", "dist_3d_ns", "seq_dist_ns",
+    "res_type_i_ns", "res_type_j_ns",
+)
+
+
+def _merge_stats(stats_list: list[dict], paths: list[str]) -> dict:
+    """
+    Pool the non-self-edge geometry pool from multiple seeds of the same
+    architecture/config into a single combined dict, as if every edge had
+    come from one larger run.
+
+    All inputs must share the same number of encoder layers ``L`` — the
+    figures and volumes compare layers positionally, so a mismatch would
+    silently mix unrelated layers.  Only the fields the geometry functions
+    actually read are pooled (the non-self ``theta`` / ``phi`` / ``dist_3d_ns``
+    / ``seq_dist_ns`` / ``res_type_i_ns`` / ``res_type_j_ns`` / ``scored_attn_ns``
+    pool) — the full per-edge arrays from :func:`_load_stats` are not needed
+    downstream and are dropped.  ``res_idx_ns`` is offset per file so residue
+    ids stay globally unique after concatenation (needed for a residue-level
+    cluster bootstrap over the pooled pool).
+    """
+    L = stats_list[0]["L"]
+    for path, s in zip(paths, stats_list):
+        if s["L"] != L:
+            raise ValueError(
+                f"All stats_npz files must share the same number of "
+                f"encoder layers to be pooled; {paths[0]!r} has L={L} but "
+                f"{path!r} has L={s['L']}")
+
+    modes = {str(s.get("mode", "unknown")) for s in stats_list}
+    if len(modes) > 1:
+        print(f"[geometry] WARNING: pooling stats files with different "
+              f"'mode' values: {sorted(modes)}")
+
+    merged: dict = {
+        "L":          L,
+        "mode":       stats_list[0].get("mode", "unknown"),
+        "n_proteins": sum(int(s.get("n_proteins", 0)) for s in stats_list),
+    }
+    for key in _NS_FLAT_KEYS:
+        merged[key] = np.concatenate([s[key] for s in stats_list])
+
+    res_idx_parts = []
+    offset = 0
+    for s in stats_list:
+        res_idx_parts.append(s["res_idx_ns"] + offset)
+        offset += int(s["res_idx"].max()) + 1
+    merged["res_idx_ns"] = np.concatenate(res_idx_parts)
+
+    merged["scored_attn_ns"] = [
+        np.concatenate([s["scored_attn_ns"][l] for s in stats_list])
+        for l in range(L)
+    ]
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -958,8 +1060,8 @@ def export_volumes(
     seq_dist_min: int = 1,
     d_min: float = 0.0,
     d_max: float = float("inf"),
-    source_aa: str | None = None,
-    neighbour_aa: str | None = None,
+    source_aa: list | None = None,
+    neighbour_aa: list | None = None,
 ) -> None:
     """
     Convert (d, θ, φ) → Cartesian (x, y, z) in the local backbone frame, bin
@@ -999,8 +1101,10 @@ def export_volumes(
     vol_n_bins   : voxels per axis.
     seq_dist_min : minimum |i − j|; edges below are excluded.
     d_min, d_max : distance range filter (Å).
-    source_aa    : optional one-letter source residue code (already upper-cased).
-    neighbour_aa : optional one-letter neighbour residue code (already upper-cased).
+    source_aa    : optional list of one-letter source residue codes (already
+                   upper-cased); matched as "any of".
+    neighbour_aa : optional list of one-letter neighbour residue codes
+                   (already upper-cased); matched as "any of".
     """
     L     = stats["L"]
     voxel = 2.0 * r_max / vol_n_bins
@@ -1018,13 +1122,13 @@ def export_volumes(
         tj = stats["res_type_j_ns"].astype(int)
         pair_mask = bg_mask.copy()
         if source_aa is not None:
-            pair_mask &= (ti == _AA_INDEX[source_aa])
+            pair_mask &= np.isin(ti, [_AA_INDEX[aa] for aa in source_aa])
         if neighbour_aa is not None:
-            pair_mask &= (tj == _AA_INDEX[neighbour_aa])
+            pair_mask &= np.isin(tj, [_AA_INDEX[aa] for aa in neighbour_aa])
 
-        src_label = source_aa   if source_aa   else "all"
-        nbr_label = neighbour_aa if neighbour_aa else "all"
-        pair_tag  = f"_{src_label}{nbr_label}"
+        src_label = _aa_display(source_aa)
+        nbr_label = _aa_display(neighbour_aa)
+        pair_tag  = f"_{_aa_tag(source_aa)}{_aa_tag(neighbour_aa)}"
 
         n_pair = int(pair_mask.sum())
         n_bg   = int(bg_mask.sum())
@@ -1147,8 +1251,8 @@ def export_volumes(
 def fig_geometry_scatter_pair(
     stats: dict,
     out_dir: str,
-    source_aa: str | None,
-    neighbour_aa: str | None,
+    source_aa: list | None,
+    neighbour_aa: list | None,
     score_vmin: float = 0.5,
     score_vmax: float = 2.0,
     n_bins: int = 80,
@@ -1179,12 +1283,16 @@ def fig_geometry_scatter_pair(
     mask     = (seq_all >= seq_dist_min) & (dist_all >= d_min) & (dist_all <= d_max)
 
     if source_aa is not None:
-        mask &= (stats["res_type_i_ns"].astype(int) == _AA_INDEX[source_aa])
+        mask &= np.isin(stats["res_type_i_ns"].astype(int),
+                         [_AA_INDEX[aa] for aa in source_aa])
     if neighbour_aa is not None:
-        mask &= (stats["res_type_j_ns"].astype(int) == _AA_INDEX[neighbour_aa])
+        mask &= np.isin(stats["res_type_j_ns"].astype(int),
+                         [_AA_INDEX[aa] for aa in neighbour_aa])
 
-    src_label = source_aa   if source_aa   else "all"
-    nbr_label = neighbour_aa if neighbour_aa else "all"
+    src_label = _aa_display(source_aa)
+    nbr_label = _aa_display(neighbour_aa)
+    src_tag   = _aa_tag(source_aa)
+    nbr_tag   = _aa_tag(neighbour_aa)
 
     dist  = dist_all[mask]
     theta = stats["theta"][mask]
@@ -1299,7 +1407,7 @@ def fig_geometry_scatter_pair(
 
         path = os.path.join(
             out_dir,
-            f"fig_geometry_scatter_{src_label}_{nbr_label}_layer{l + 1}.svg",
+            f"fig_geometry_scatter_{src_tag}_{nbr_tag}_layer{l + 1}.svg",
         )
         fig.savefig(path, dpi=300, bbox_inches="tight")
         plt.close(fig)
@@ -1313,8 +1421,8 @@ def fig_geometry_scatter_pair(
 def fig_geometry_enrichment(
     stats: dict,
     out_dir: str,
-    source_aa: str | None,
-    neighbour_aa: str | None,
+    source_aa: list | None,
+    neighbour_aa: list | None,
     n_bins: int = 80,
     sigma: float = 1.5,
     seq_dist_min: int = 1,
@@ -1336,8 +1444,10 @@ def fig_geometry_enrichment(
     ----------
     stats        : dict produced by :func:`_load_stats`.
     out_dir      : output directory.
-    source_aa    : one-letter source residue code (already upper-cased), or None.
-    neighbour_aa : one-letter neighbour residue code, or None.
+    source_aa    : list of one-letter source residue codes (already
+                   upper-cased), or None; matched as "any of".
+    neighbour_aa : list of one-letter neighbour residue codes, or None;
+                   matched as "any of".
     n_bins       : number of uniform 2-D bins per axis.
     sigma        : Gaussian smoothing σ (bins); 0 disables smoothing.
     seq_dist_min : minimum |i − j|.
@@ -1356,12 +1466,16 @@ def fig_geometry_enrichment(
     # ── pair mask ─────────────────────────────────────────────────────────────
     pair_mask = bg_mask.copy()
     if source_aa is not None:
-        pair_mask &= (stats["res_type_i_ns"].astype(int) == _AA_INDEX[source_aa])
+        pair_mask &= np.isin(stats["res_type_i_ns"].astype(int),
+                              [_AA_INDEX[aa] for aa in source_aa])
     if neighbour_aa is not None:
-        pair_mask &= (stats["res_type_j_ns"].astype(int) == _AA_INDEX[neighbour_aa])
+        pair_mask &= np.isin(stats["res_type_j_ns"].astype(int),
+                              [_AA_INDEX[aa] for aa in neighbour_aa])
 
-    src_label = source_aa   if source_aa   else "all"
-    nbr_label = neighbour_aa if neighbour_aa else "all"
+    src_label = _aa_display(source_aa)
+    nbr_label = _aa_display(neighbour_aa)
+    src_tag   = _aa_tag(source_aa)
+    nbr_tag   = _aa_tag(neighbour_aa)
     n_pair    = int(pair_mask.sum())
     n_bg      = int(bg_mask.sum())
 
@@ -1507,7 +1621,7 @@ def fig_geometry_enrichment(
 
         path = os.path.join(
             out_dir,
-            f"fig_geometry_enrichment_{src_label}_{nbr_label}_layer{l + 1}.svg",
+            f"fig_geometry_enrichment_{src_tag}_{nbr_tag}_layer{l + 1}.svg",
         )
         fig.savefig(path, dpi=300, bbox_inches="tight")
         plt.close(fig)
@@ -1529,13 +1643,18 @@ def main() -> None:
     n_ns    = len(stats["theta"])
 
     pair_mode = (ctx.source_aa is not None) or (ctx.neighbour_aa is not None)
-    src_label = ctx.source_aa   if ctx.source_aa   else "all"
-    nbr_label = ctx.neighbour_aa if ctx.neighbour_aa else "all"
+    src_label = _aa_display(ctx.source_aa)
+    nbr_label = _aa_display(ctx.neighbour_aa)
 
+    n_seeds = len(ctx.stats_npz)
+    seeds_note = f"  seeds_pooled={n_seeds}" if n_seeds > 1 else ""
     print(
-        f"[geometry] mode={mode}  layers={L}  "
+        f"[geometry] mode={mode}  layers={L}{seeds_note}  "
         f"proteins={n_prots}  non-self edges (total)={n_ns:,}"
     )
+    if n_seeds > 1:
+        for path in ctx.stats_npz:
+            print(f"  · {path}")
     if pair_mode:
         print(f"[geometry] pair filter: {src_label} → {nbr_label}")
 
