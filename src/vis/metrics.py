@@ -59,7 +59,8 @@ that frontier (``--pareto_bootstrap`` resamples, default 200) — since the
 empirical frontier from a single ~500-structure sample is noisy, the band
 shows how much of its shape is signal vs. sampling variance — plus
 per-architecture marginal density histograms of recovery (top) and
-TM-score (right).
+TM-score (right). Each architecture's legend entry carries its own
+Pearson r and Spearman rho between recovery and TM-score.
 
 Usage
 -----
@@ -961,7 +962,13 @@ def _plot_pareto_recovery_tmscore(
 
     for architecture, group in df.groupby("Architecture"):
         color = colors[architecture]
-        ax.scatter(group["recovery"], group["tm_score"], label=architecture,
+        if len(group) >= 2:
+            pearson_r, _  = sp_stats.pearsonr(group["recovery"], group["tm_score"])
+            spearman_r, _ = sp_stats.spearmanr(group["recovery"], group["tm_score"])
+            label = f"{architecture} (r={pearson_r:.2f}, ρ={spearman_r:.2f})"
+        else:
+            label = architecture
+        ax.scatter(group["recovery"], group["tm_score"], label=label,
                    color=color, alpha=0.4, s=14)
         ax_histx.hist(group["recovery"], bins=recovery_bins, color=color,
                       alpha=0.4, density=True, histtype="stepfilled")
