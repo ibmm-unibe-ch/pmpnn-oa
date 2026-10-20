@@ -52,12 +52,14 @@ folder, written by scripts/gen_exp2_finetuning_multimers.sbatch.
 Finally, a recovery-vs-TM-score scatter is saved to ``--pareto_out``
 (default ``pareto_recovery_tmscore.svg`` next to ``--out``), pooling every
 record with both values across every resolved model/seed directory,
-colored by model. It overlays the strict empirical Pareto frontier
-(non-dominated in both recovery and TM-score) with a bootstrapped 90%
-confidence band on that frontier (``--pareto_bootstrap`` resamples,
-default 200) — since the empirical frontier from a single ~500-structure
-sample is noisy, the band shows how much of its shape is signal vs.
-sampling variance.
+colored by architecture (seeds, and Experiment 1 data fractions, pooled
+together). It overlays the strict empirical Pareto frontier (non-dominated
+in both recovery and TM-score) with a bootstrapped 90% confidence band on
+that frontier (``--pareto_bootstrap`` resamples, default 200) — since the
+empirical frontier from a single ~500-structure sample is noisy, the band
+shows how much of its shape is signal vs. sampling variance — plus
+per-architecture marginal density histograms of recovery (top) and
+TM-score (right).
 
 Usage
 -----
@@ -923,9 +925,11 @@ def _plot_pareto_recovery_tmscore(
 ) -> bool:
     """Scatter recovery (x) vs TM-score (y) across every model/seed
     directory with both values, overlaid with the strict empirical Pareto
-    frontier and a bootstrapped 90% CI band on it. Saves to *out_path* and
-    returns True, or returns False (saving nothing) if there are fewer
-    than 2 paired (recovery, tm_score) records to plot."""
+    frontier and a bootstrapped 90% CI band on it, plus per-architecture
+    marginal density histograms of recovery (top) and TM-score (right).
+    Saves to *out_path* and returns True, or returns False (saving
+    nothing) if there are fewer than 2 paired (recovery, tm_score)
+    records to plot."""
     df = _pareto_recovery_tmscore_frame(all_metrics)
     if len(df) < 2:
         return False
@@ -937,9 +941,34 @@ def _plot_pareto_recovery_tmscore(
     )
     strict_frontier = _pareto_frontier(df, "recovery", "tm_score")
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    architectures = sorted(df["Architecture"].unique())
+    cycle_colors  = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    colors = {a: cycle_colors[i % len(cycle_colors)] for i, a in enumerate(architectures)}
+
+    fig = plt.figure(figsize=(9, 7))
+    gs = fig.add_gridspec(
+        2, 2, width_ratios=(4, 1), height_ratios=(1, 4),
+        left=0.1, right=0.9, bottom=0.1, top=0.92, wspace=0.05, hspace=0.05,
+    )
+    ax       = fig.add_subplot(gs[1, 0])
+    ax_histx = fig.add_subplot(gs[0, 0], sharex=ax)
+    ax_histy = fig.add_subplot(gs[1, 1], sharey=ax)
+    ax_histx.tick_params(axis="x", labelbottom=False)
+    ax_histy.tick_params(axis="y", labelleft=False)
+
+    recovery_bins = np.linspace(df["recovery"].min(), df["recovery"].max(), 31)
+    tm_score_bins = np.linspace(df["tm_score"].min(), df["tm_score"].max(), 31)
+
     for architecture, group in df.groupby("Architecture"):
-        ax.scatter(group["recovery"], group["tm_score"], label=architecture, alpha=0.4, s=14)
+        color = colors[architecture]
+        ax.scatter(group["recovery"], group["tm_score"], label=architecture,
+                   color=color, alpha=0.4, s=14)
+        ax_histx.hist(group["recovery"], bins=recovery_bins, color=color,
+                      alpha=0.4, density=True, histtype="stepfilled")
+        ax_histy.hist(group["tm_score"], bins=tm_score_bins, color=color,
+                      alpha=0.4, density=True, histtype="stepfilled",
+                      orientation="horizontal")
+
     ax.plot(x_eval, median, color="red", linewidth=2, label="Median frontier (bootstrap)")
     ax.fill_between(x_eval, lower, upper, color="red", alpha=0.15, label="90% frontier CI")
     ax.plot(
@@ -948,9 +977,11 @@ def _plot_pareto_recovery_tmscore(
     )
     ax.set_xlabel("Recovery")
     ax.set_ylabel("TM-score")
-    ax.set_title("Recovery vs TM-score Pareto frontier")
     ax.grid(True, alpha=0.2)
     ax.legend(loc="best", fontsize="small")
+    ax_histx.set_ylabel("Density")
+    ax_histy.set_xlabel("Density")
+    fig.suptitle("Recovery vs TM-score Pareto frontier")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return True
