@@ -834,22 +834,44 @@ def _build_report(all_metrics: list[ModelMetrics]) -> str:
 # (higher recovery AND higher TM-score) across the board. The empirical
 # frontier from a single ~500-structure sample is noisy, so its sampling
 # uncertainty is estimated by bootstrap resampling the pooled per-structure
-# (recovery, tm_score) pairs and recomputing the frontier each time.
+# (recovery, tm_score) pairs and recomputing the frontier each time. Points
+# are colored by architecture (oa1/oa3/vanilla3/gat3), pooling seeds (and,
+# for Experiment 1 labels, data fractions) together, since per-seed color
+# would just split each architecture's cloud into indistinguishable shades.
+
+_ARCHITECTURE_PREFIXES = ("oa1", "oa3", "vanilla3", "gat3")
+
+
+def _architecture_label(label: str) -> str:
+    """Strip a '_seed<seed>' (and, for Experiment 1 labels, '_frac<fraction>')
+    suffix off *label*, leaving the bare architecture name — e.g.
+    'oa1_seed0' -> 'oa1', 'oa1_frac0.1_seed0' -> 'oa1', 'vanilla3' -> 'vanilla3'
+    (no suffix to strip). Labels that don't start with a known architecture
+    prefix (e.g. 'native') are returned unchanged."""
+    for prefix in _ARCHITECTURE_PREFIXES:
+        if label == prefix or label.startswith(prefix + "_"):
+            return prefix
+    return label
+
 
 def _pareto_recovery_tmscore_frame(all_metrics: list[ModelMetrics]) -> pd.DataFrame:
-    """Pooled per-structure (recovery, tm_score, Model) rows, one per record
-    that has both values, across every model/seed directory in *all_metrics*
-    (e.g. 'native', which has no recovery, is naturally excluded)."""
+    """Pooled per-structure (recovery, tm_score, Architecture) rows, one per
+    record that has both values, across every model/seed directory in
+    *all_metrics* (e.g. 'native', which has no recovery, is naturally
+    excluded). Seeds (and data fractions) are pooled under their shared
+    architecture via _architecture_label, so color reflects architecture
+    only."""
     rows = []
     for m in all_metrics:
+        architecture = _architecture_label(m.label)
         for record in m.per_structure.values():
             if "recovery" in record and "tm_score" in record:
                 rows.append({
                     "recovery": record["recovery"],
                     "tm_score": record["tm_score"],
-                    "Model": m.label,
+                    "Architecture": architecture,
                 })
-    return pd.DataFrame(rows, columns=["recovery", "tm_score", "Model"])
+    return pd.DataFrame(rows, columns=["recovery", "tm_score", "Architecture"])
 
 
 def _pareto_frontier(df: pd.DataFrame, x_col: str, y_col: str) -> pd.DataFrame:
@@ -916,8 +938,8 @@ def _plot_pareto_recovery_tmscore(
     strict_frontier = _pareto_frontier(df, "recovery", "tm_score")
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    for label, group in df.groupby("Model"):
-        ax.scatter(group["recovery"], group["tm_score"], label=label, alpha=0.4, s=14)
+    for architecture, group in df.groupby("Architecture"):
+        ax.scatter(group["recovery"], group["tm_score"], label=architecture, alpha=0.4, s=14)
     ax.plot(x_eval, median, color="red", linewidth=2, label="Median frontier (bootstrap)")
     ax.fill_between(x_eval, lower, upper, color="red", alpha=0.15, label="90% frontier CI")
     ax.plot(
