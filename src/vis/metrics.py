@@ -59,8 +59,11 @@ that frontier (``--pareto_bootstrap`` resamples, default 200) — since the
 empirical frontier from a single ~500-structure sample is noisy, the band
 shows how much of its shape is signal vs. sampling variance — plus
 per-architecture marginal density histograms of recovery (top) and
-TM-score (right). Each architecture's legend entry carries its own
-Pearson r and Spearman rho between recovery and TM-score.
+TM-score (right). Each architecture's legend entry carries its own 95%
+confidence interval on the Pearson r and Spearman rho between recovery
+and TM-score (Fisher-z based; scipy's built-in CI for Pearson, the same
+approximation with the standard 1.06 variance-inflation correction for
+Spearman).
 
 Usage
 -----
@@ -921,6 +924,24 @@ def _bootstrap_frontier_band(
     return lower, median, upper
 
 
+def _correlation_ci(x: np.ndarray, y: np.ndarray, method: str, confidence: float = 0.95) -> tuple:
+    """95% CI for the Pearson or Spearman correlation between *x* and *y*.
+    Pearson uses scipy's built-in Fisher-z confidence_interval(); Spearman
+    has no such method in scipy, so it's approximated the same way with
+    the standard 1.06 variance-inflation correction for Spearman's larger
+    sampling variance under bivariate normality (Fieller, Hartley &
+    Pearson, 1957). Requires at least 4 points (n - 3 > 0)."""
+    n = len(x)
+    if method == "pearson":
+        result = sp_stats.pearsonr(x, y)
+        ci = result.confidence_interval(confidence_level=confidence)
+        return ci.low, ci.high
+    z = np.arctanh(sp_stats.spearmanr(x, y).statistic)
+    se = np.sqrt(1.06 / (n - 3))
+    z_crit = sp_stats.norm.ppf(0.5 + confidence / 2)
+    return float(np.tanh(z - z_crit * se)), float(np.tanh(z + z_crit * se))
+
+
 def _plot_pareto_recovery_tmscore(
     all_metrics: list[ModelMetrics], out_path: str, n_iterations: int, seed: int,
 ) -> bool:
@@ -962,10 +983,13 @@ def _plot_pareto_recovery_tmscore(
 
     for architecture, group in df.groupby("Architecture"):
         color = colors[architecture]
-        if len(group) >= 2:
-            pearson_r, _  = sp_stats.pearsonr(group["recovery"], group["tm_score"])
-            spearman_r, _ = sp_stats.spearmanr(group["recovery"], group["tm_score"])
-            label = f"{architecture} (r={pearson_r:.2f}, ρ={spearman_r:.2f})"
+        if len(group) >= 4:
+            r_lo, r_hi     = _correlation_ci(group["recovery"], group["tm_score"], "pearson")
+            rho_lo, rho_hi = _correlation_ci(group["recovery"], group["tm_score"], "spearman")
+            label = (
+                f"{architecture} (r 95% CI [{r_lo:.2f},{r_hi:.2f}], "
+                f"ρ 95% CI [{rho_lo:.2f},{rho_hi:.2f}])"
+            )
         else:
             label = architecture
         ax.scatter(group["recovery"], group["tm_score"], label=label,
