@@ -49,6 +49,34 @@ Boltz/TM-score data exists for these yet) for every model/seed directory
 with a populated ``eval/seqs_homomers`` or ``eval/seqs_heteromers``
 folder, written by scripts/gen_exp2_finetuning_multimers.sbatch.
 
+Three further sections report the same mean +/- std score/recovery for
+the attention-ablation sweeps, one row per populated
+``eval/seqs_uniform_<layers>`` / ``eval/seqs_permute_<layers>`` /
+``eval/seqs_isotropic_<layers>`` folder across every resolved model_dir —
+``<layers>`` is whatever ``--uniform_attn_layers`` /
+``--permute_attn_layers`` / ``--isotropic_attn_layers`` value that run
+used (a 0-indexed encoder-layer index, or ``all``). All three probe
+whether a model is actually using its learned geometric attention:
+  - uniform (src/gen/uniform_attn.py,
+    scripts/gen_uniform_attn_exp2_finetuning.sbatch) keeps each node's
+    self-attention weight as computed but flattens its attention to
+    every other neighbour to a single uniform weight, destroying both
+    which neighbour is attended to and the shape of the attention
+    distribution.
+  - permute (src/gen/permute_attn.py,
+    scripts/gen_permute_attn_exp2_finetuning.sbatch) also keeps the
+    self-attention weight, but keeps the learned multiset of non-self
+    weights too and only randomly reassigns which neighbour each one
+    lands on, isolating whether the model needs the specific
+    weight-to-neighbour assignment as opposed to just a non-trivial
+    attention profile.
+  - isotropic (src/gen/isotropic_attn.py,
+    scripts/gen_isotropic_attn_exp2_finetuning.sbatch) instead hooks
+    OAAttention.degree_gate and zeroes every spherical-harmonic degree
+    l >= 1, collapsing the attention score to a function of Ca-Ca
+    distance alone — oa-mode only, since gat/vanilla have no
+    degree_gate.
+
 Finally, a recovery-vs-TM-score scatter is saved to ``--pareto_out``
 (default ``pareto_recovery_tmscore.svg`` next to ``--out``), pooling every
 record with both values across every resolved model/seed directory,
@@ -475,6 +503,35 @@ def _format_metrics_table(all_metrics: list[ModelMetrics]) -> str:
 
 def _format_quartiles_table(all_metrics: list[ModelMetrics]) -> str:
     return _format_table(all_metrics, _quartiles)
+
+
+def _collect_attn_ablation_metrics(
+    resolved_dirs: list, resolved_labels: list, dir_prefix: str,
+) -> list[ModelMetrics]:
+    """Score/recovery for an attention-ablation sweep (src/gen/uniform_attn.py
+    or src/gen/permute_attn.py, scripts/gen_<dir_prefix minus 'seqs_'>_
+    exp2_finetuning.sbatch): one ModelMetrics per populated
+    ``eval/<dir_prefix>_<layers>`` folder across every resolved model_dir,
+    labeled ``"<label> (layers=<layers>)"``. Discovered by globbing each
+    model_dir's eval/ folder rather than a fixed name, so whichever
+    --*_attn_layers runs actually exist on disk (one layer, several, or
+    'all') are picked up automatically."""
+    dir_re = re.compile(rf"^{re.escape(dir_prefix)}_(?P<layers>.+)$")
+    collected = []
+    for model_dir, label in zip(resolved_dirs, resolved_labels):
+        eval_dir = os.path.join(model_dir, "eval")
+        if not os.path.isdir(eval_dir):
+            continue
+        for name in sorted(os.listdir(eval_dir)):
+            match = dir_re.match(name)
+            if match is None:
+                continue
+            seqs_dir = os.path.join(eval_dir, name)
+            if not os.path.isdir(seqs_dir) or not os.listdir(seqs_dir):
+                continue
+            row_label = f"{label} (layers={match.group('layers')})"
+            collected.append(_collect_model_metrics(model_dir, row_label, seqs_dir=seqs_dir))
+    return collected
 
 
 _MODEL_FRAC_SEED_RE = re.compile(r"^(?P<model>.+)_frac(?P<frac>[0-9.]+)_seed(?P<seed>\d+)$")
@@ -1072,6 +1129,19 @@ def main() -> None:
     homomers_report   = _extra_section("seqs_homomers")
     heteromers_report = _extra_section("seqs_heteromers")
 
+    def _attn_ablation_section(dir_prefix: str) -> str:
+        collected = _collect_attn_ablation_metrics(ctx.resolved_dirs, ctx.resolved_labels, dir_prefix)
+        if collected:
+            return _format_score_recovery_table(collected)
+        return (
+            f"n/a — no model/seed directory has a populated "
+            f"eval/{dir_prefix}_<layers> folder in the resolved set."
+        )
+
+    uniform_attn_report   = _attn_ablation_section("seqs_uniform")
+    permute_attn_report   = _attn_ablation_section("seqs_permute")
+    isotropic_attn_report = _attn_ablation_section("seqs_isotropic")
+
     pareto_plotted = _plot_pareto_recovery_tmscore(
         all_metrics, ctx.pareto_out, ctx.pareto_bootstrap, ctx.pareto_seed,
     )
@@ -1092,6 +1162,9 @@ def main() -> None:
         f"(N={len(at_or_below_ids)} structures)\n\n" + at_or_below_report + "\n\n"
         "# Homomers (score/recovery)\n\n" + homomers_report + "\n\n"
         "# Heteromers (score/recovery)\n\n" + heteromers_report + "\n\n"
+        "# Uniform attention ablation (score/recovery)\n\n" + uniform_attn_report + "\n\n"
+        "# Permute attention ablation (score/recovery)\n\n" + permute_attn_report + "\n\n"
+        "# Isotropic attention ablation (score/recovery)\n\n" + isotropic_attn_report + "\n\n"
         "# Pareto frontier — recovery vs TM-score\n\n" + pareto_section + "\n"
     )
     with open(ctx.out, "w") as f:

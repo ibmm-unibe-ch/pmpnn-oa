@@ -59,7 +59,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import warnings
 from dataclasses import dataclass, field
 
 import matplotlib
@@ -67,7 +66,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
-from joblib import Parallel, delayed
+from joblib import Parallel
+
+from vis._bootstrap import (
+    BootData, _build_cell_ids, _compute_aa_grids, _compute_geom_grids,
+    _load_stats, _stack_tree, _summarize_tree, bin_index, build_layout,
+    double_center, grid_sums, run_bootstrap,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -116,41 +121,8 @@ def _parse_pairs(specs: list[str]):
 
 
 # ---------------------------------------------------------------------------
-# Generic binning / grid helpers (shared by the geometric and edge-type sections)
+# Edge-type contrast (main-specific — kept here, not in vis._bootstrap)
 # ---------------------------------------------------------------------------
-
-def bin_index(x: np.ndarray, edges: np.ndarray) -> np.ndarray:
-    """Bin index in [0, len(edges)-2], or -1 if outside [edges[0], edges[-1]]."""
-    idx = np.searchsorted(edges, x, side="right") - 1
-    idx[x == edges[-1]] = len(edges) - 2
-    idx[(idx < 0) | (idx > len(edges) - 2)] = -1
-    return idx.astype(np.int64)
-
-
-def flat_index(ia: np.ndarray, ib: np.ndarray, nb: int) -> np.ndarray:
-    out = ia * nb + ib
-    out[(ia < 0) | (ib < 0)] = -1
-    return out
-
-
-def grid_mean(ids: np.ndarray, v: np.ndarray, shape: tuple, min_count: int) -> np.ndarray:
-    n = int(np.prod(shape))
-    ok = ids >= 0
-    s = np.bincount(ids[ok], weights=v[ok], minlength=n)
-    c = np.bincount(ids[ok], minlength=n)
-    m = np.full(n, np.nan)
-    good = c >= min_count
-    m[good] = s[good] / c[good]
-    return m.reshape(shape)
-
-
-def grid_sums(ids: np.ndarray, v: np.ndarray, shape: tuple):
-    n = int(np.prod(shape))
-    ok = ids >= 0
-    s = np.bincount(ids[ok], weights=v[ok], minlength=n).reshape(shape)
-    c = np.bincount(ids[ok], minlength=n).reshape(shape)
-    return s, c
-
 
 def contrast(s: np.ndarray, c: np.ndarray, background: str, min_count: int) -> np.ndarray:
     """s, c: (..., 4) sums/counts per group [A->B, A->notB, notA->B, notA->notB].
@@ -166,100 +138,6 @@ def contrast(s: np.ndarray, c: np.ndarray, background: str, min_count: int) -> n
             bg[cb < min_count] = np.nan
             return m[..., 0] - bg
     raise ValueError(f"unknown background: {background!r}")
-
-
-def prune_sparse_lines(x: np.ndarray, min_cells: int) -> np.ndarray:
-    """Set rows/columns with < min_cells valid cells to NaN, until stable."""
-    x = x.copy()
-    while True:
-        valid = ~np.isnan(x)
-        bad_r = valid.sum(axis=1) < min_cells
-        bad_c = valid.sum(axis=0) < min_cells
-        drop = (bad_r[:, None] | bad_c[None, :]) & valid
-        if not drop.any():
-            return x
-        x[drop] = np.nan
-
-
-def double_center(x: np.ndarray, n_iter: int = 100, tol: float = 1e-9,
-                  prune: bool = False, min_cells_line: int = 3) -> np.ndarray:
-    """Remove additive row (x-variable) and column (y-variable) effects by iterative
-    mean polish; exact with missing (NaN) cells."""
-    if prune:
-        x = prune_sparse_lines(x, min_cells_line)
-    if np.all(np.isnan(x)):
-        return x
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        resid = x - np.nanmean(x)
-        for _ in range(n_iter):
-            r = np.nan_to_num(np.nanmean(resid, axis=1, keepdims=True))
-            resid = resid - r
-            c = np.nan_to_num(np.nanmean(resid, axis=0, keepdims=True))
-            resid = resid - c
-            if max(np.abs(r).max(), np.abs(c).max()) < tol:
-                break
-    return resid
-
-
-def build_layout(mask: np.ndarray, protein_ids: np.ndarray, n_proteins: int):
-    """CSR layout of masked edge indices grouped by protein. Proteins without masked
-    edges keep length 0 (still sampling units for the bootstrap)."""
-    sel = np.flatnonzero(mask)
-    pid = protein_ids[sel]
-    flat_idx = sel[np.argsort(pid, kind="stable")]
-    lengths = np.bincount(pid, minlength=n_proteins)
-    starts = np.concatenate(([0], np.cumsum(lengths)[:-1]))
-    return flat_idx, starts, lengths
-
-
-def gather(sampled: np.ndarray, flat_idx: np.ndarray, starts: np.ndarray,
-          lengths: np.ndarray) -> np.ndarray:
-    lens = lengths[sampled]
-    total = lens.sum()
-    if total == 0:
-        return np.empty(0, dtype=np.int64)
-    cum = np.cumsum(lens)
-    pos = (np.arange(total) - np.repeat(cum - lens, lens)
-           + np.repeat(starts[sampled], lens))
-    return flat_idx[pos]
-
-
-def _build_cell_ids(dist: np.ndarray, theta: np.ndarray, phi: np.ndarray, edges: dict):
-    bi = {
-        "dist": bin_index(dist, edges["dist"]),
-        "theta": bin_index(theta, edges["theta"]),
-        "phi": bin_index(phi, edges["phi"]),
-    }
-    panels = {"dist_theta": ("dist", "theta"), "dist_phi": ("dist", "phi"),
-             "theta_phi": ("theta", "phi")}
-    cell_ids = {name: flat_index(bi[a], bi[b], len(edges[b]) - 1)
-               for name, (a, b) in panels.items()}
-    cell_ids["dist_1d"] = bi["dist"]
-    shapes = {name: (len(edges[a]) - 1, len(edges[b]) - 1) for name, (a, b) in panels.items()}
-    shapes["dist_1d"] = (len(edges["dist"]) - 1,)
-    return cell_ids, shapes
-
-
-# ---------------------------------------------------------------------------
-# Per-replicate grid construction (plain, picklable top-level functions — kept free
-# of closures so joblib's automatic array memmapping applies to the big arrays)
-# ---------------------------------------------------------------------------
-
-def _compute_geom_grids(idx, v_layers, cell_ids, shapes, min_count, layers):
-    """Per selected layer: raw geometric-mean score grids (3 panels + 1-D distance
-    profile), plus a double-centered variant of each 2-D panel (key suffix '_c')."""
-    out = {}
-    for l in layers:
-        vv = v_layers[l][idx]
-        layer_out = {}
-        for k, ids_full in cell_ids.items():
-            g = grid_mean(ids_full[idx], vv, shapes[k], min_count)
-            layer_out[k] = g
-            if g.ndim == 2:
-                layer_out[k + "_c"] = double_center(g)
-        out[l] = layer_out
-    return out
 
 
 def _compute_edge_grids(idx, v_layers, type_i, type_j, cell_ids, shapes, min_count,
@@ -289,43 +167,19 @@ def _compute_edge_grids(idx, v_layers, type_i, type_j, cell_ids, shapes, min_cou
     return out
 
 
-def _compute_aa_grids(idx, v_layers, type_i, type_j, dist, dist_edges, min_count, layers):
-    """Per distance bin, per selected layer: the full 20x20 (attending type, attended
-    type) mean log2-score grid, with additive row (attending type) and column
-    (attended type) effects removed by iterative double-centering — the generic
-    counterpart of ``_compute_edge_grids`` for the full AA alphabet rather than a
-    specific residue-pair spec. Grids are returned in the natural AA_ALPHABET order;
-    the biochemical display order is applied only when plotting."""
-    n_bins = len(dist_edges) - 1
-    db = bin_index(dist[idx], dist_edges)
-    ti, tj = type_i[idx], type_j[idx]
-    n_aa = len(AA_ALPHABET)
-    out = {}
-    for l in layers:
-        vv = v_layers[l][idx]
-        bin_out = {}
-        for b in range(n_bins):
-            flat = np.where(db == b, ti * n_aa + tj, -1)
-            g = grid_mean(flat, vv, (n_aa, n_aa), min_count)
-            bin_out[b] = double_center(g)
-        out[l] = bin_out
-    return out
-
-
 # ---------------------------------------------------------------------------
-# Protein-level cluster bootstrap — run ONCE, shared by every figure below
+# Protein-level cluster bootstrap — run ONCE, shared by every figure below.
+# ``MainBootExtra`` + ``_main_bootstrap_compute`` is the ``extra``/``compute_fn``
+# pair fed into ``vis._bootstrap.BootData``/``run_bootstrap`` (which only know how
+# to resample proteins — this module supplies what to compute per replicate).
 # ---------------------------------------------------------------------------
 
 @dataclass
-class BootData:
-    """Everything a bootstrap worker needs, bundled into one explicit argument so
-    joblib's loky backend can memory-map the large arrays instead of re-pickling
-    them per task (this is why these are passed as an argument rather than
-    captured in a closure)."""
-    flat_idx: np.ndarray
-    starts: np.ndarray
-    lengths: np.ndarray
-    n_proteins: int
+class MainBootExtra:
+    """Everything ``_main_bootstrap_compute`` needs for one replicate, bundled into
+    one explicit argument so joblib's loky backend can memory-map the large arrays
+    instead of re-pickling them per task (this is why these are passed as an
+    argument rather than captured in a closure)."""
     seq_dist: np.ndarray
     dist: np.ndarray
     geom_seq_min: int
@@ -347,64 +201,30 @@ class BootData:
     layers: list
 
 
-def _pool_to_views(idx_pool, bd: BootData):
+def _pool_to_views(idx_pool, extra: MainBootExtra):
     """One protein-resampled edge pool -> the (geometric, edge-type) sub-selections.
     Both are boolean subsets of the SAME idx_pool, so a replicate's resampling of
     proteins is identical across both result families."""
-    sd = bd.seq_dist[idx_pool]
-    idx_geom = idx_pool if bd.geom_seq_min <= 1 else idx_pool[sd >= bd.geom_seq_min]
-    idx_edge = idx_pool[sd >= bd.edge_seq_min]
+    sd = extra.seq_dist[idx_pool]
+    idx_geom = idx_pool if extra.geom_seq_min <= 1 else idx_pool[sd >= extra.geom_seq_min]
+    idx_edge = idx_pool[sd >= extra.edge_seq_min]
     return idx_geom, idx_edge
 
 
-def _bootstrap_batch(seed_batch, bd: BootData):
-    results, n_none = [], 0
-    for ss in seed_batch:
-        rng = np.random.default_rng(ss)
-        sampled = rng.integers(0, bd.n_proteins, size=bd.n_proteins)
-        idx_pool = gather(sampled, bd.flat_idx, bd.starts, bd.lengths)
-        if idx_pool.size == 0:
-            n_none += 1
-            continue
-        idx_geom, idx_edge = _pool_to_views(idx_pool, bd)
-        geom = _compute_geom_grids(idx_geom, bd.v_layers, bd.geom_cell_ids, bd.geom_shapes,
-                                   bd.geom_min_count, bd.layers)
-        edge = _compute_edge_grids(idx_edge, bd.v_layers, bd.type_i, bd.type_j,
-                                   bd.edge_cell_ids, bd.edge_shapes, bd.edge_min_count,
-                                   bd.pairs_meta, bd.background, bd.edge_min_cells_line, bd.layers)
-        aa = _compute_aa_grids(idx_edge, bd.v_layers, bd.type_i, bd.type_j, bd.dist,
-                               bd.aa_dist_edges, bd.aa_min_count, bd.layers)
-        results.append({"geom": geom, "edge": edge, "aa": aa})
-    return results, n_none
-
-
-def run_bootstrap(parallel, seeds, bd: BootData, batch_size: int):
-    batches = [seeds[k:k + batch_size] for k in range(0, len(seeds), batch_size)]
-    all_results, n_none_total = [], 0
-    for results, n_none in parallel(delayed(_bootstrap_batch)(b, bd) for b in batches):
-        all_results.extend(results)
-        n_none_total += n_none
-    return all_results, n_none_total
-
-
-def _stack_tree(items):
-    if isinstance(items[0], dict):
-        return {k: _stack_tree([it[k] for it in items]) for k in items[0]}
-    return np.stack(items, axis=0)
-
-
-def _summarize_tree(point_tree, boot_tree, n_requested: int, min_coverage: float):
-    if isinstance(point_tree, dict):
-        return {k: _summarize_tree(point_tree[k], boot_tree[k], n_requested, min_coverage)
-                for k in point_tree}
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        lo = np.nanpercentile(boot_tree, 2.5, axis=0)
-        hi = np.nanpercentile(boot_tree, 97.5, axis=0)
-    coverage = np.sum(~np.isnan(boot_tree), axis=0) / n_requested
-    reliable = coverage >= min_coverage
-    signif = reliable & (lo > 0)
-    return dict(point=point_tree, lo=lo, hi=hi, reliable=reliable, signif=signif)
+def _main_bootstrap_compute(idx_pool, extra: MainBootExtra) -> dict:
+    """One replicate's (geometric, edge-type, AA-heatmap) result tree — used both
+    for the point estimate (``idx_pool = flat_idx``) and for every bootstrap
+    replicate, so the two code paths can never drift apart."""
+    idx_geom, idx_edge = _pool_to_views(idx_pool, extra)
+    geom = _compute_geom_grids(idx_geom, extra.v_layers, extra.geom_cell_ids, extra.geom_shapes,
+                               extra.geom_min_count, extra.layers)
+    edge = _compute_edge_grids(idx_edge, extra.v_layers, extra.type_i, extra.type_j,
+                               extra.edge_cell_ids, extra.edge_shapes, extra.edge_min_count,
+                               extra.pairs_meta, extra.background, extra.edge_min_cells_line,
+                               extra.layers)
+    aa = _compute_aa_grids(idx_edge, extra.v_layers, extra.type_i, extra.type_j, extra.dist,
+                           extra.aa_dist_edges, extra.aa_min_count, extra.layers)
+    return {"geom": geom, "edge": edge, "aa": aa}
 
 
 # ---------------------------------------------------------------------------
@@ -876,82 +696,6 @@ def run_spectral(stats: dict, out_dir: str, seq_dist_min: int, l_max: int | None
 
 
 # ---------------------------------------------------------------------------
-# Statistics loading
-# ---------------------------------------------------------------------------
-
-def _load_stats(path: str, layers: list) -> dict:
-    """Load a .npz file produced by stats.py and derive the non-self-edge geometry
-    pool (local-frame theta/phi/dist) plus the budget-weighted score and, for OA
-    checkpoints, the spherical-harmonic spectral coefficients — for ``layers`` (a
-    list of 0-indexed encoder-layer ids) only, so an unselected layer's per-edge
-    arrays are never read off disk."""
-    raw = np.load(path, allow_pickle=False)
-    L = int(raw["L"])
-    mode = str(raw["mode"])
-
-    required = ("is_self", "nbr_Ca", "seq_dist", "res_type_i", "res_type_j",
-               "protein_idx", "res_idx")
-    missing = [k for k in required if k not in raw]
-    if missing:
-        raise ValueError(f"stats file {path!r} is missing required key(s) {missing} "
-                         f"— re-run stats.py")
-    for l in layers:
-        if f"scored_attn_{l}" not in raw:
-            raise ValueError(f"stats file {path!r} is missing 'scored_attn_{l}' "
-                             f"— re-run stats.py")
-
-    is_self = raw["is_self"].astype(bool)
-    non_self = ~is_self
-
-    nbr_Ca = raw["nbr_Ca"][non_self]
-    dist = np.linalg.norm(nbr_Ca, axis=-1)
-    d_hat = nbr_Ca / np.clip(dist, 1e-8, None)[:, None]
-    theta = np.arccos(np.clip(d_hat[:, 0], -1.0, 1.0))
-    phi = np.arctan2(d_hat[:, 1], d_hat[:, 2])
-
-    ANGLE_TOL = 1e-5
-    if not (theta.min() >= -ANGLE_TOL and theta.max() <= np.pi + ANGLE_TOL):
-        raise ValueError(f"theta outside [0, π]: [{theta.min():.4f}, {theta.max():.4f}]")
-    if not (phi.min() >= -np.pi - ANGLE_TOL and phi.max() <= np.pi + ANGLE_TOL):
-        raise ValueError(f"phi outside [-π, π]: [{phi.min():.4f}, {phi.max():.4f}]")
-    theta = np.clip(theta, 0.0, np.pi)
-    phi = np.clip(phi, -np.pi, np.pi)
-
-    scored_attn = {}
-    for l in layers:
-        score = raw[f"scored_attn_{l}"][non_self].astype(np.float64)
-        if np.any(~(score > 0)):
-            raise ValueError(f"stats file {path!r}, layer {l}: non-positive "
-                             f"budget-weighted scores (alpha_ij = 0?)")
-        scored_attn[l] = score
-
-    stats = {
-        "L": L, "mode": mode,
-        "n_proteins": int(raw.get("n_proteins", 0)),
-        "dist_3d": dist.astype(np.float32),
-        "theta": theta.astype(np.float32),
-        "phi": phi.astype(np.float32),
-        "seq_dist": raw["seq_dist"][non_self].astype(np.float32),
-        "res_type_i": raw["res_type_i"][non_self].astype(np.int64),
-        "res_type_j": raw["res_type_j"][non_self].astype(np.int64),
-        "protein_idx": raw["protein_idx"][non_self].astype(np.int64),
-        "res_idx": raw["res_idx"][non_self].astype(np.int64),
-        "scored_attn": scored_attn,
-    }
-
-    if mode == "oa" and "spectral_0" in raw:
-        n_sh = int(raw["n_sh"]) if "n_sh" in raw else raw["spectral_0"].shape[1]
-        for l in layers:
-            if f"spectral_{l}" not in raw:
-                raise ValueError(f"stats file {path!r} is missing 'spectral_{l}' "
-                                 f"— re-run stats.py in 'oa' mode")
-        stats["n_sh"] = n_sh
-        stats["spectral"] = {l: raw[f"spectral_{l}"].astype(np.float32) for l in layers}
-
-    return stats
-
-
-# ---------------------------------------------------------------------------
 # Context — configuration + validated CLI parsing
 # ---------------------------------------------------------------------------
 
@@ -1237,8 +981,7 @@ def main() -> None:
     edge_cell_ids, edge_shapes = _build_cell_ids(dist, theta, phi, EDGE_EDGES)
     AA_DIST_EDGES = np.linspace(ctx.dist_min, ctx.dist_max, ctx.aa_n_dist_bins + 1)
 
-    bd = BootData(
-        flat_idx=flat_idx, starts=starts, lengths=lengths, n_proteins=n_proteins,
+    extra = MainBootExtra(
         seq_dist=seq_dist, dist=dist, geom_seq_min=ctx.geom_seq_dist_min,
         geom_cell_ids=geom_cell_ids, geom_shapes=geom_shapes, geom_min_count=ctx.geom_min_count,
         edge_seq_min=ctx.edge_seq_dist_min, edge_cell_ids=edge_cell_ids,
@@ -1247,18 +990,12 @@ def main() -> None:
         background=ctx.background, edge_min_cells_line=ctx.edge_min_cells_line,
         aa_dist_edges=AA_DIST_EDGES, aa_min_count=ctx.aa_min_count, layers=layers,
     )
+    bd = BootData(flat_idx=flat_idx, starts=starts, lengths=lengths,
+                  n_proteins=n_proteins, extra=extra)
 
     # ── point estimate (unresampled population) ─────────────────────────────────
-    idx_geom_point, idx_edge_point = _pool_to_views(flat_idx, bd)
-    point = {
-        "geom": _compute_geom_grids(idx_geom_point, v_layers, geom_cell_ids, geom_shapes,
-                                    ctx.geom_min_count, layers),
-        "edge": _compute_edge_grids(idx_edge_point, v_layers, type_i, type_j,
-                                    edge_cell_ids, edge_shapes, ctx.edge_min_count,
-                                    ctx.pairs_meta, ctx.background, ctx.edge_min_cells_line, layers),
-        "aa": _compute_aa_grids(idx_edge_point, v_layers, type_i, type_j, dist,
-                                AA_DIST_EDGES, ctx.aa_min_count, layers),
-    }
+    point = _main_bootstrap_compute(flat_idx, extra)
+    idx_edge_point = _pool_to_views(flat_idx, extra)[1]
 
     pair_counts = []
     ti_pt, tj_pt = type_i[idx_edge_point], type_j[idx_edge_point]
@@ -1277,7 +1014,7 @@ def main() -> None:
     n_tasks = min(ctx.n_bootstraps, 4 * (os.cpu_count() or 1))
     batch_size = -(-ctx.n_bootstraps // n_tasks)
     with Parallel(n_jobs=ctx.n_jobs, return_as="generator_unordered", max_nbytes="1M") as parallel:
-        results, n_none = run_bootstrap(parallel, seeds, bd, batch_size)
+        results, n_none = run_bootstrap(parallel, seeds, bd, batch_size, _main_bootstrap_compute)
     if not results:
         raise RuntimeError("every bootstrap replicate was empty — check --dist_min/"
                            "--dist_max and the seq_dist_min filters")
