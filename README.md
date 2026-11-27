@@ -270,9 +270,9 @@ stage, which is why the SLURM scripts derive them from the run name.
 
 - **Not in version control:** `models/`, `data/` and `ckpt/` are gitignored
   (checkpoints and datasets are large); the three test-set ID lists under
-  `index/` are tracked despite the ignore rule. `scripts/` and `*.sbatch`
-  are currently gitignored too, so a fresh clone does not include the SLURM
-  pipelines — they live in the working tree only.
+  `index/` are tracked despite the ignore rule. Everything under `scripts/`
+  is tracked, so a fresh clone includes the full SLURM pipelines and their
+  helper scripts.
 - **Training provenance.** The grid in Experiment 1 is fully reproducible from
   `exp1_data_fraction_01_train`. The Experiment 2, Appendix A and Appendix B
   checkpoints predate their analysis pipelines and have no training script in

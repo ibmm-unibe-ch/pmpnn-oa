@@ -46,6 +46,5 @@ slurm-*.out
 /tmp/
 .DS_Store
 
-# Scripts (to add later to git)
-scripts/
-*.sbatch
+# The `data` symlink itself; its target is ignored by `data/` above
+data
