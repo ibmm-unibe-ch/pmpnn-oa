@@ -12,13 +12,13 @@
 # models produced by Experiment 1 (data-fraction scaling sweep), on the
 # held-out test monomers (data/test_monomers.txt).
 #
-# Merges scripts/stats_exp2_finetuning.sbatch and
-# scripts/vis_exp2_finetuning.sbatch into a single per-model pipeline: oa1
+# Merges scripts/exp2_finetuning_05_stats.sbatch and
+# scripts/exp2_finetuning_06_vis.sbatch into a single per-model pipeline: oa1
 # is always 1 encoder layer, so there is only ever one pmpnn-vis layer per
 # model and no need for the (model, layer)-flattened array
-# scripts/vis_exp2_finetuning.sbatch uses for exp2's oa3/gat3 (3 layers
+# scripts/exp2_finetuning_06_vis.sbatch uses for exp2's oa3/gat3 (3 layers
 # each). Sequence generation is not included here — it is already covered
-# by scripts/gen_exp1_data_fraction.sbatch for all four exp1 configs.
+# by scripts/exp1_data_fraction_02_gen.sbatch for all four exp1 configs.
 #
 # Each array task, for one models/exp1_data_fraction/oa1_frac<fraction>_seed<seed>:
 #   1. pmpnn-stats -> eval/stats.npz                       (if missing)
@@ -27,11 +27,11 @@
 # completed task can be resumed by re-submitting.
 #
 # Model naming: oa1_frac<fraction>_seed<seed>, following
-# scripts/train_exp1_data_fraction.sbatch and
-# scripts/gen_exp1_data_fraction.sbatch (mode=oa, num_encoder_layers=1,
+# scripts/exp1_data_fraction_01_train.sbatch and
+# scripts/exp1_data_fraction_02_gen.sbatch (mode=oa, num_encoder_layers=1,
 # --r_max_orb 12.0, the same default used for oa1 elsewhere).
 #
-# Submit from the repo root: sbatch scripts/stats_vis_exp1_oa1.sbatch
+# Submit from the repo root: sbatch scripts/exp1_data_fraction_03_stats_vis_oa1.sbatch
 # The production partition has 6 schedulable GPUs (4x A5000, 2x A4000), so
 # the array is throttled to 6 concurrent tasks (%6).
 

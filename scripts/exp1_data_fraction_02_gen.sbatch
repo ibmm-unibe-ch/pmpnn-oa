@@ -17,14 +17,14 @@
 # models/exp1_data_fraction/<name>_frac<fraction>_seed<seed>/eval/seqs/
 #
 # The (config, fraction, seed) grid and the array-index decomposition follow
-# scripts/train_exp1_data_fraction.sbatch exactly (4 configs x 5 fractions x
+# scripts/exp1_data_fraction_01_train.sbatch exactly (4 configs x 5 fractions x
 # 3 seeds = 60 runs):
 #   configs:   oa1 (mode=oa, 1 encoder layer), oa3 (mode=oa, 3 encoder layers),
 #              vanilla3 (mode=vanilla, 3 layers), gat3 (mode=gat, 3 layers)
 #   fractions: 0.1 0.2 0.4 0.8 1.0
 #   seeds:     0 1 2
 #
-# Submit from the repo root: sbatch scripts/gen_exp1_data_fraction.sbatch
+# Submit from the repo root: sbatch scripts/exp1_data_fraction_02_gen.sbatch
 # The production partition has 6 schedulable GPUs (4x A5000, 2x A4000), so
 # the array is throttled to 6 concurrent tasks (%6).
 

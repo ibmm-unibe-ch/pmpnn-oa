@@ -11,7 +11,7 @@
 # Sequence generation with the models produced by Experiment 2 (finetuning),
 # for the held-out test homomers and heteromers (data/test_homomers.txt,
 # data/test_heteromers.txt) — the multi-chain complex counterparts of
-# scripts/gen_exp2_finetuning.sbatch, which only covers test_monomers.txt.
+# scripts/exp2_finetuning_02_gen_monomers.sbatch, which only covers test_monomers.txt.
 #
 # pmpnn-gen is inference-only and lightweight on GPU memory/compute, so
 # instead of one model per array task (and one GPU per model), this script
@@ -27,14 +27,14 @@
 # as a whole exits non-zero if any model failed.
 #
 # The model_name -> (mode, num_encoder_layers) mapping follows the same
-# naming convention used by scripts/train_exp1_data_fraction.sbatch and
-# scripts/gen_exp2_finetuning.sbatch:
+# naming convention used by scripts/exp1_data_fraction_01_train.sbatch and
+# scripts/exp2_finetuning_02_gen_monomers.sbatch:
 #   oa1*      -> mode=oa,      num_encoder_layers=1
 #   oa3*      -> mode=oa,      num_encoder_layers=3
 #   vanilla3* -> mode=vanilla, num_encoder_layers=3
 #   gat3*     -> mode=gat,     num_encoder_layers=3
 #
-# Submit from the repo root: sbatch scripts/gen_exp2_finetuning_multimers.sbatch
+# Submit from the repo root: sbatch scripts/exp2_finetuning_02_gen_multimers.sbatch
 # --cpus-per-task/--mem are scaled up (x2, not x3) from a single-model task
 # since 3 concurrent inference processes share the GPU but don't linearly
 # multiply CPU/host-memory needs; adjust to taste if a group turns out to

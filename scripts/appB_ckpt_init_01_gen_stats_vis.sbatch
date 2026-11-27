@@ -1,37 +1,38 @@
 #!/bin/bash
-#SBATCH --job-name=pmpnn-appA-gen-vis
+#SBATCH --job-name=pmpnn-appB-gen-vis
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32g
 #SBATCH --gres=gpu:a5000:1
 #SBATCH --time=10:00:00
-#SBATCH --array=0-11%6
+#SBATCH --array=0-8%6
 
 # Sequence generation, statistics extraction and geometric/attention
-# visualisation for the models produced by Appendix A (OA distance-cutoff
+# visualisation for the models produced by Appendix B (checkpoint-init
 # sweep), on the held-out test monomers (data/test_monomers.txt).
 #
-# Merges scripts/gen_exp2_finetuning.sbatch, scripts/stats_exp2_finetuning.sbatch
-# and scripts/vis_exp2_finetuning.sbatch into a single per-model pipeline:
-# every appA model is oa1 (1 encoder layer), so there is only ever one
+# Merges scripts/exp2_finetuning_02_gen_monomers.sbatch, scripts/exp2_finetuning_05_stats.sbatch
+# and scripts/exp2_finetuning_06_vis.sbatch into a single per-model pipeline:
+# every appB model is oa1 (1 encoder layer), so there is only ever one
 # pmpnn-vis layer per model and no need for the (model, layer)-flattened
-# array scripts/vis_exp2_finetuning.sbatch uses for exp2's oa3/gat3 (3
+# array scripts/exp2_finetuning_06_vis.sbatch uses for exp2's oa3/gat3 (3
 # layers each).
 #
-# Each array task, for one models/appA_distance_cutoff/<model_name>:
+# Each array task, for one models/appB_ckpt_init/<model_name>:
 #   1. pmpnn-gen   -> eval/seqs/<pdbid_chain>.fa              (if missing)
 #   2. pmpnn-stats -> eval/stats.npz                          (if missing)
 #   3. pmpnn-vis   -> vis_1/ (figures for encoder layer 1)    (if missing)
 # Each stage is skipped if its output already exists, so a partially
 # completed task can be resumed by re-submitting.
 #
-# Model naming: oa1_dist<r_max_orb>_seed<seed>, e.g. oa1_dist8_seed0. Every
-# model is mode=oa, num_encoder_layers=1; --r_max_orb is read directly off
-# the "dist<N>" component of the model name, since that cutoff is the
-# independent variable Appendix A sweeps over.
+# Model naming: oa1_ckpt<fraction>_seed<seed>, e.g. oa1_ckpt0.02_seed0 — the
+# checkpoint-init fraction only affects how training was initialized, not
+# inference, so every model is mode=oa, num_encoder_layers=1,
+# --r_max_orb=12.0 (the same default used for oa1 elsewhere, e.g.
+# scripts/exp1_data_fraction_01_train.sbatch).
 #
-# Submit from the repo root: sbatch scripts/gen_vis_appA_distance_cutoff.sbatch
+# Submit from the repo root: sbatch scripts/appB_ckpt_init_01_gen_stats_vis.sbatch
 # The production partition has 6 schedulable GPUs (4x A5000, 2x A4000), so
 # the array is throttled to 6 concurrent tasks (%6).
 
@@ -43,18 +44,17 @@ mkdir -p logs
 source .venv/bin/activate
 
 MODEL_NAMES=(
-    oa1_dist8_seed0  oa1_dist8_seed1  oa1_dist8_seed2
-    oa1_dist10_seed0 oa1_dist10_seed1 oa1_dist10_seed2
-    oa1_dist14_seed0 oa1_dist14_seed1 oa1_dist14_seed2
-    oa1_dist16_seed0 oa1_dist16_seed1 oa1_dist16_seed2
+    oa1_ckpt0.02_seed0 oa1_ckpt0.02_seed1 oa1_ckpt0.02_seed2
+    oa1_ckpt0.10_seed0 oa1_ckpt0.10_seed1 oa1_ckpt0.10_seed2
+    oa1_ckpt0.30_seed0 oa1_ckpt0.30_seed1 oa1_ckpt0.30_seed2
 )
 
 MODEL_NAME=${MODEL_NAMES[$SLURM_ARRAY_TASK_ID]}
 
-if [[ "${MODEL_NAME}" =~ ^oa1_dist([0-9]+)_seed[0-9]+$ ]]; then
+if [[ "${MODEL_NAME}" =~ ^oa1_ckpt[0-9.]+_seed[0-9]+$ ]]; then
     MODE=oa
     LAYERS=1
-    R_MAX_ORB="${BASH_REMATCH[1]}.0"
+    R_MAX_ORB=12.0
 else
     echo "Task ${SLURM_ARRAY_TASK_ID}: unrecognized model name ${MODEL_NAME}" >&2
     exit 1
@@ -62,7 +62,7 @@ fi
 
 echo "Task ${SLURM_ARRAY_TASK_ID}: MODEL_NAME=${MODEL_NAME}, MODE=${MODE}, LAYERS=${LAYERS}, R_MAX_ORB=${R_MAX_ORB}"
 
-MODEL_DIR="models/appA_distance_cutoff/${MODEL_NAME}"
+MODEL_DIR="models/appB_ckpt_init/${MODEL_NAME}"
 WEIGHTS="${MODEL_DIR}/model_weights/best.pt"
 
 if [ ! -f "${WEIGHTS}" ]; then

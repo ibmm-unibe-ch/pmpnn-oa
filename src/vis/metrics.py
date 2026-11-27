@@ -33,8 +33,8 @@ signed-rank test (seed-averaged per structure, ~500 matched pairs).
 A sixth table gives the mean score/recovery per model/fraction/seed, one
 row per model/seed directory whose label matches the
 ``<model>_frac<fraction>_seed<seed>`` naming convention used by
-Experiment 1's data-fraction sweep (scripts/train_exp1_data_fraction.sbatch,
-scripts/gen_exp1_data_fraction.sbatch) — e.g. when run with
+Experiment 1's data-fraction sweep (scripts/exp1_data_fraction_01_train.sbatch,
+scripts/exp1_data_fraction_02_gen.sbatch) — e.g. when run with
 ``--root models/exp1_data_fraction``.
 
 The same six-table report is then repeated twice more, split by whether
@@ -47,7 +47,7 @@ cannot successfully re-fold from the ground-truth sequence, so both the
 Two more sections report mean +/- std score/recovery (only — no
 Boltz/TM-score data exists for these yet) for every model/seed directory
 with a populated ``eval/seqs_homomers`` or ``eval/seqs_heteromers``
-folder, written by scripts/gen_exp2_finetuning_multimers.sbatch.
+folder, written by scripts/exp2_finetuning_02_gen_multimers.sbatch.
 
 Four further sections report the same mean +/- std score/recovery for
 the ablation sweeps, one row per populated ``eval/seqs_uniform_<layers>``
@@ -59,26 +59,26 @@ used (a 0-indexed encoder-layer index, or ``all``); ``<offset>`` is
 whatever ``--seqdist_offset`` value that run used. The first three probe
 whether a model is actually using its learned geometric attention:
   - uniform (src/gen/uniform_attn.py,
-    scripts/gen_uniform_attn_exp2_finetuning.sbatch) keeps each node's
+    scripts/exp2_finetuning_07_ablation_uniform_attn.sbatch) keeps each node's
     self-attention weight as computed but flattens its attention to
     every other neighbour to a single uniform weight, destroying both
     which neighbour is attended to and the shape of the attention
     distribution.
   - permute (src/gen/permute_attn.py,
-    scripts/gen_permute_attn_exp2_finetuning.sbatch) also keeps the
+    scripts/exp2_finetuning_07_ablation_permute_attn.sbatch) also keeps the
     self-attention weight, but keeps the learned multiset of non-self
     weights too and only randomly reassigns which neighbour each one
     lands on, isolating whether the model needs the specific
     weight-to-neighbour assignment as opposed to just a non-trivial
     attention profile.
   - isotropic (src/gen/isotropic_attn.py,
-    scripts/gen_isotropic_attn_exp2_finetuning.sbatch) instead hooks
+    scripts/exp2_finetuning_07_ablation_isotropic_attn.sbatch) instead hooks
     OAAttention.degree_gate and zeroes every spherical-harmonic degree
     l >= 1, collapsing the attention score to a function of Ca-Ca
     distance alone — oa-mode only, since gat/vanilla have no
     degree_gate.
   - seqdist (src/gen/seqdist_attn.py,
-    scripts/gen_seqdist_attn_exp2_finetuning.sbatch) instead hooks
+    scripts/exp2_finetuning_07_ablation_seqdist_attn.sbatch) instead hooks
     ProteinFeatures.embeddings (PositionalEncodings) and overwrites
     every edge's true sequence-distance offset with a fixed constant,
     probing whether the model is using relative sequence-position
@@ -374,7 +374,7 @@ def _collect_model_metrics(model_dir: str, label: str, seqs_dir: str | None = No
     Collect metrics for *model_dir*. *seqs_dir* defaults to the model's
     ``eval/seqs`` (test_monomers) FASTA directory; pass
     ``eval/seqs_homomers`` or ``eval/seqs_heteromers`` (written by
-    scripts/gen_exp2_finetuning_multimers.sbatch) to instead collect
+    scripts/exp2_finetuning_02_gen_multimers.sbatch) to instead collect
     score/recovery for those test sets. Boltz confidence and TM-score
     lookups stay keyed off *model_dir*'s own eval/structs_boltz, which only
     has data for the monomers set; for other *seqs_dir* values those
@@ -519,8 +519,8 @@ def _collect_attn_ablation_metrics(
 ) -> list[ModelMetrics]:
     """Score/recovery for an ablation sweep (src/gen/uniform_attn.py,
     src/gen/permute_attn.py, src/gen/isotropic_attn.py or
-    src/gen/seqdist_attn.py, scripts/gen_<dir_prefix minus 'seqs_'>_
-    exp2_finetuning.sbatch): one ModelMetrics per populated
+    src/gen/seqdist_attn.py, scripts/exp2_finetuning_07_ablation_*.sbatch):
+    one ModelMetrics per populated
     ``eval/<dir_prefix>_<value>`` folder across every resolved model_dir,
     labeled ``"<label> (<param_name>=<value>)"`` — *param_name* is
     ``"layers"`` for the per-encoder-layer attention ablations (a
@@ -552,8 +552,8 @@ _MODEL_FRAC_SEED_RE = re.compile(r"^(?P<model>.+)_frac(?P<frac>[0-9.]+)_seed(?P<
 def _parse_model_frac_seed(label: str) -> tuple | None:
     """
     Parse a ``<model>_frac<fraction>_seed<seed>`` label — the naming
-    convention used by scripts/train_exp1_data_fraction.sbatch and
-    scripts/gen_exp1_data_fraction.sbatch for Experiment 1's data-fraction
+    convention used by scripts/exp1_data_fraction_01_train.sbatch and
+    scripts/exp1_data_fraction_02_gen.sbatch for Experiment 1's data-fraction
     sweep — into ``(model, fraction, seed)``. Returns ``None`` if *label*
     doesn't match (e.g. Experiment 2's ``oa1_seed0`` labels).
     """
@@ -1119,7 +1119,7 @@ def main() -> None:
 
     def _collect_extra_seqs(seqs_subdir: str) -> list[ModelMetrics]:
         """Score/recovery for a second test set (e.g. eval/seqs_homomers,
-        written by scripts/gen_exp2_finetuning_multimers.sbatch), for
+        written by scripts/exp2_finetuning_02_gen_multimers.sbatch), for
         every resolved model_dir that has it populated."""
         collected = []
         for model_dir, label in zip(ctx.resolved_dirs, ctx.resolved_labels):

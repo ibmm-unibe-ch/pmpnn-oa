@@ -294,7 +294,7 @@ def _load_stats(path: str) -> dict:
 
 # Parent-directory names that mean "this is an eval/output folder, not the
 # checkpoint name" — used to pick a sensible default seed label.  Matches the
-# models/<name>/eval/stats.npz layout used by scripts/*_exp2_finetuning.sbatch.
+# models/<name>/eval/stats.npz layout used by scripts/exp2_finetuning_*.sbatch.
 _GENERIC_DIR_NAMES = {"eval", "stats", "output", "out", "results"}
 
 
