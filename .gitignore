@@ -21,11 +21,22 @@ ckpt/
 *.tar.gz
 
 # ── Model weights & training state ────────────────────────────────────────
-models/
+# Everything under models/ is ignored EXCEPT each run's best.pt checkpoint,
+# which is tracked on purpose so the trained models ship with the repo.
+# Note the mechanics: `models/**` (not `models/`) ignores the *contents*
+# rather than the directory, and `!models/**/` re-includes directories, so
+# git still descends into them -- a file cannot be re-included once a parent
+# directory is excluded. The best.pt negation must stay AFTER `*.pt`, since
+# the last matching pattern wins.
+models/**
+!models/**/
 *.pt
 *.pth
 *.safetensors
-model_weights/
+# Root-level only: a bare `model_weights/` would block descent into each
+# run's model_weights/ directory and so hide its best.pt.
+/model_weights/
+!models/**/best.pt
 
 # ── Datasets / cached tensors & arrays ────────────────────────────────────
 *.h5
