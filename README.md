@@ -180,9 +180,11 @@ the `usalign` environment module.
 
 **Ablations (step 07).** Each re-samples sequences with one kind of
 information removed at inference time via forward hooks — no retraining — and
-is compared against the unablated sequences from step 02. A sweep covers each
-encoder layer alone plus all layers at once, so the per-layer runs show
-*where* the information matters.
+is compared against the unablated sequences from step 02. They run on the
+seed-0 runs only. The three attention ablations sweep each encoder layer
+alone plus all layers at once, so the per-layer runs show *where* the
+information matters; `seqdist_attn` has no per-layer sweep, because the
+sequence-separation embedding is computed once before the encoder stack.
 
 | Ablation | What it removes | Question |
 |----------|-----------------|----------|
