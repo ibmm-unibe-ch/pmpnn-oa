@@ -85,7 +85,6 @@ scripts/
                                      parameter counts
 models/<experiment>/<run>/           checkpoints and all per-run outputs
 index/                               test-set ID lists (monomers/homomers/heteromers)
-results/                             figures from an earlier iteration of the project
 ```
 
 `pmpnn-stats` writes a `stats.npz` holding per-residue and per-edge
@@ -284,9 +283,8 @@ stage, which is why the SLURM scripts derive them from the run name.
   `epoch`, `step`, `num_edges` and `noise_level` — not the full argument set.
   Since the weights are tracked, every analysis can still be re-run against
   them; only the training itself cannot be reproduced from this repo.
-- **`results/`** holds figures from an earlier iteration, under that
-  iteration's naming (`pmpnn-oa-12`, `pmpnn-oa-sl-12`, `gat`, where `-12` is
-  the 12 Å cutoff and `-sl` a single encoder layer). Current outputs live
-  beside their checkpoints in `models/<experiment>/<run>/`.
+- **All outputs live beside their checkpoint** in
+  `models/<experiment>/<run>/`: `eval/` for metrics, sequences and
+  `stats.npz`, and `vis_<layer>/` for figures.
 - **Appendices C and D** contain only `stats.npz` and figures, with no
   accompanying scripts.
