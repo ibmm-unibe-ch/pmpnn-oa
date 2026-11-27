@@ -49,13 +49,14 @@ Boltz/TM-score data exists for these yet) for every model/seed directory
 with a populated ``eval/seqs_homomers`` or ``eval/seqs_heteromers``
 folder, written by scripts/gen_exp2_finetuning_multimers.sbatch.
 
-Three further sections report the same mean +/- std score/recovery for
-the attention-ablation sweeps, one row per populated
-``eval/seqs_uniform_<layers>`` / ``eval/seqs_permute_<layers>`` /
-``eval/seqs_isotropic_<layers>`` folder across every resolved model_dir —
+Four further sections report the same mean +/- std score/recovery for
+the ablation sweeps, one row per populated ``eval/seqs_uniform_<layers>``
+/ ``eval/seqs_permute_<layers>`` / ``eval/seqs_isotropic_<layers>`` /
+``eval/seqs_seqdist_<offset>`` folder across every resolved model_dir —
 ``<layers>`` is whatever ``--uniform_attn_layers`` /
 ``--permute_attn_layers`` / ``--isotropic_attn_layers`` value that run
-used (a 0-indexed encoder-layer index, or ``all``). All three probe
+used (a 0-indexed encoder-layer index, or ``all``); ``<offset>`` is
+whatever ``--seqdist_offset`` value that run used. The first three probe
 whether a model is actually using its learned geometric attention:
   - uniform (src/gen/uniform_attn.py,
     scripts/gen_uniform_attn_exp2_finetuning.sbatch) keeps each node's
@@ -76,6 +77,14 @@ whether a model is actually using its learned geometric attention:
     l >= 1, collapsing the attention score to a function of Ca-Ca
     distance alone — oa-mode only, since gat/vanilla have no
     degree_gate.
+  - seqdist (src/gen/seqdist_attn.py,
+    scripts/gen_seqdist_attn_exp2_finetuning.sbatch) instead hooks
+    ProteinFeatures.embeddings (PositionalEncodings) and overwrites
+    every edge's true sequence-distance offset with a fixed constant,
+    probing whether the model is using relative sequence-position
+    information at all — applies across every mode (oa/gat/vanilla),
+    unlike the other three, since PositionalEncodings has nothing to do
+    with the attention module each mode may or may not have.
 
 Finally, a recovery-vs-TM-score scatter is saved to ``--pareto_out``
 (default ``pareto_recovery_tmscore.svg`` next to ``--out``), pooling every
@@ -506,17 +515,20 @@ def _format_quartiles_table(all_metrics: list[ModelMetrics]) -> str:
 
 
 def _collect_attn_ablation_metrics(
-    resolved_dirs: list, resolved_labels: list, dir_prefix: str,
+    resolved_dirs: list, resolved_labels: list, dir_prefix: str, param_name: str = "layers",
 ) -> list[ModelMetrics]:
-    """Score/recovery for an attention-ablation sweep (src/gen/uniform_attn.py
-    or src/gen/permute_attn.py, scripts/gen_<dir_prefix minus 'seqs_'>_
+    """Score/recovery for an ablation sweep (src/gen/uniform_attn.py,
+    src/gen/permute_attn.py, src/gen/isotropic_attn.py or
+    src/gen/seqdist_attn.py, scripts/gen_<dir_prefix minus 'seqs_'>_
     exp2_finetuning.sbatch): one ModelMetrics per populated
-    ``eval/<dir_prefix>_<layers>`` folder across every resolved model_dir,
-    labeled ``"<label> (layers=<layers>)"``. Discovered by globbing each
-    model_dir's eval/ folder rather than a fixed name, so whichever
-    --*_attn_layers runs actually exist on disk (one layer, several, or
-    'all') are picked up automatically."""
-    dir_re = re.compile(rf"^{re.escape(dir_prefix)}_(?P<layers>.+)$")
+    ``eval/<dir_prefix>_<value>`` folder across every resolved model_dir,
+    labeled ``"<label> (<param_name>=<value>)"`` — *param_name* is
+    ``"layers"`` for the per-encoder-layer attention ablations (a
+    0-indexed layer index, or 'all') and ``"offset"`` for seqdist_attn's
+    fixed sequence-distance value. Discovered by globbing each
+    model_dir's eval/ folder rather than a fixed name, so whichever runs
+    actually exist on disk are picked up automatically."""
+    dir_re = re.compile(rf"^{re.escape(dir_prefix)}_(?P<value>.+)$")
     collected = []
     for model_dir, label in zip(resolved_dirs, resolved_labels):
         eval_dir = os.path.join(model_dir, "eval")
@@ -529,7 +541,7 @@ def _collect_attn_ablation_metrics(
             seqs_dir = os.path.join(eval_dir, name)
             if not os.path.isdir(seqs_dir) or not os.listdir(seqs_dir):
                 continue
-            row_label = f"{label} (layers={match.group('layers')})"
+            row_label = f"{label} ({param_name}={match.group('value')})"
             collected.append(_collect_model_metrics(model_dir, row_label, seqs_dir=seqs_dir))
     return collected
 
@@ -1129,18 +1141,21 @@ def main() -> None:
     homomers_report   = _extra_section("seqs_homomers")
     heteromers_report = _extra_section("seqs_heteromers")
 
-    def _attn_ablation_section(dir_prefix: str) -> str:
-        collected = _collect_attn_ablation_metrics(ctx.resolved_dirs, ctx.resolved_labels, dir_prefix)
+    def _attn_ablation_section(dir_prefix: str, param_name: str = "layers") -> str:
+        collected = _collect_attn_ablation_metrics(
+            ctx.resolved_dirs, ctx.resolved_labels, dir_prefix, param_name=param_name,
+        )
         if collected:
             return _format_score_recovery_table(collected)
         return (
             f"n/a — no model/seed directory has a populated "
-            f"eval/{dir_prefix}_<layers> folder in the resolved set."
+            f"eval/{dir_prefix}_<{param_name}> folder in the resolved set."
         )
 
     uniform_attn_report   = _attn_ablation_section("seqs_uniform")
     permute_attn_report   = _attn_ablation_section("seqs_permute")
     isotropic_attn_report = _attn_ablation_section("seqs_isotropic")
+    seqdist_attn_report   = _attn_ablation_section("seqs_seqdist", param_name="offset")
 
     pareto_plotted = _plot_pareto_recovery_tmscore(
         all_metrics, ctx.pareto_out, ctx.pareto_bootstrap, ctx.pareto_seed,
@@ -1165,6 +1180,7 @@ def main() -> None:
         "# Uniform attention ablation (score/recovery)\n\n" + uniform_attn_report + "\n\n"
         "# Permute attention ablation (score/recovery)\n\n" + permute_attn_report + "\n\n"
         "# Isotropic attention ablation (score/recovery)\n\n" + isotropic_attn_report + "\n\n"
+        "# Sequence-distance ablation (score/recovery)\n\n" + seqdist_attn_report + "\n\n"
         "# Pareto frontier — recovery vs TM-score\n\n" + pareto_section + "\n"
     )
     with open(ctx.out, "w") as f:

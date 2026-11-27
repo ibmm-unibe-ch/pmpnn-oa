@@ -112,23 +112,34 @@ def parse_layers_arg(flag: str) -> list[int] | None:
     return [int(tok) for tok in spec.replace(",", " ").split()]
 
 
+def parse_int_arg(flag: str, default: int) -> int:
+    """
+    Pull --<flag> out of sys.argv (leaving the rest untouched for
+    GenerationContext.from_args()) and parse it as an int, defaulting to
+    `default` if not given.
+    """
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument(f"--{flag}", type=int, default=default)
+    ns, remaining = p.parse_known_args()
+    sys.argv = [sys.argv[0]] + remaining
+    return getattr(ns, flag)
+
+
 # ---------------------------------------------------------------------------
 # Shared generation-loop driver (mirrors gen.__main__.main())
 # ---------------------------------------------------------------------------
 
-def run_ablation(layers_flag: str, install_fn) -> None:
+def run_generation_with_hook(install_fn) -> None:
     """
-    Entry point shared by every attention-ablation generation script:
-    parse --<layers_flag> plus the usual GenerationContext CLI, build the
-    model, call install_fn(ctx, layers) to register whatever hooks (or
-    print whatever "not applicable to this mode" warning) the caller
-    wants, then run the normal gen.__main__ generation loop unmodified.
-    install_fn owns the full decision of whether/how its ablation applies
-    to ctx.mode (different ablations target different submodules that
-    don't all exist in every mode) and is responsible for its own log
-    message.
+    Entry point shared by every ablation generation script: build the
+    usual GenerationContext + model, call install_fn(ctx) to register
+    whatever hooks (or print whatever "not applicable to this mode"
+    warning) the caller wants, then run the normal gen.__main__
+    generation loop unmodified. install_fn owns the full decision of
+    whether/how its ablation applies to ctx.mode (different ablations
+    target different submodules that don't all exist in every mode) and
+    is responsible for its own log message.
     """
-    layers = parse_layers_arg(layers_flag)
     ctx = GenerationContext.from_args()
 
     ctx.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -160,7 +171,7 @@ def run_ablation(layers_flag: str, install_fn) -> None:
     ctx.model.to(ctx.device)
     ctx.model.eval()
 
-    install_fn(ctx, layers)
+    install_fn(ctx)
 
     os.makedirs(ctx.out_folder, exist_ok=True)
 
@@ -235,3 +246,14 @@ def run_ablation(layers_flag: str, install_fn) -> None:
             except Exception as e:
                 print(f"    ERROR: {e}", file=sys.stderr)
                 continue
+
+
+def run_ablation(layers_flag: str, install_fn) -> None:
+    """
+    Entry point for per-layer attention-ablation generation scripts:
+    parse --<layers_flag> (a space/comma-separated list of 0-indexed
+    encoder layers, or "all"), then run_generation_with_hook with
+    install_fn(ctx, layers).
+    """
+    layers = parse_layers_arg(layers_flag)
+    run_generation_with_hook(lambda ctx: install_fn(ctx, layers))

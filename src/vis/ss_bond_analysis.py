@@ -69,6 +69,13 @@ Per Cys-Cys edge  [total_edges]  (non-self only; both endpoints are Cys)
   seq_dist     |pos_i - pos_j| within the structure
   dist_3d      Cα-Cα distance (Å)
   dist_cb      virtual Cβ-Cβ distance (Å) — see pmpnn.model.virtual_cbeta
+  n_neighbors  non-self neighbour count (K_non_self) of the ATTENDING
+                       (source) residue i — same quantity "analyze"'s
+                       accumulate() uses as the attention budget's
+                       per-neighbour baseline denominator. Layer-independent
+                       (purely structural: how many valid non-self entries
+                       residue i has in its K-NN graph), so one field, not
+                       per-layer.
   is_ssbond    bool  — True iff this residue pair is an annotated SSBOND
 
 Per Cys-Cys edge, per layer  [total_edges]
@@ -79,14 +86,14 @@ Per Cys-Cys edge, per layer  [total_edges]
 
 Per non-Cys/non-Cys control edge  [total_ctrl_edges]  (same fields as
 above, "ctrl_" prefixed: ctrl_name, ctrl_protein_idx, ctrl_res_idx_i,
-ctrl_res_idx_j, ctrl_seq_dist, ctrl_dist_3d, ctrl_dist_cb, and per layer
-ctrl_attn_{l}/ctrl_rel_attn_{l}/ctrl_budget_{l}/ctrl_scored_attn_{l}; no
-ctrl_is_ssbond — these edges are never bonded by construction). A random,
---ctrl_edges_per_protein-capped (default 500) subsample of every
-structure's non-self edges where NEITHER endpoint is Cys, seeded by
---ctrl_seed. This is ``analyze``'s candidate pool for a distance-matched
-comparison against the real (non-bonded) Cys-Cys population — see
-"Statistical analysis" below.
+ctrl_res_idx_j, ctrl_seq_dist, ctrl_dist_3d, ctrl_dist_cb, ctrl_n_neighbors,
+and per layer ctrl_attn_{l}/ctrl_rel_attn_{l}/ctrl_budget_{l}/
+ctrl_scored_attn_{l}; no ctrl_is_ssbond — these edges are never bonded by
+construction). A random, --ctrl_edges_per_protein-capped (default 500)
+subsample of every structure's non-self edges where NEITHER endpoint is
+Cys, seeded by --ctrl_seed. This is ``analyze``'s candidate pool for a
+distance-AND-neighbour-count-matched comparison against the real Cys-Cys
+population — see "Statistical analysis" below.
 
 Statistical analysis  (analyze)
 --------------------------------
@@ -125,44 +132,68 @@ within one protein aren't independent draws).
 More analyses (D-I), run only when the .npz has the ctrl_* fields (see
 "Output .npz keys" above — older .npz files lack them and these are
 skipped with a warning), repeat A/C but swap out the comparison class:
-instead of the real non-bonded Cys-Cys population, they use a distance-
-matched sample of non-Cys/non-Cys control edges — same total size as
-A/C's non-bonded group, and the same per-bin distribution over dist_3d
-(D), dist_cb (E) or both jointly (F, via --joint_match; C2 is F's
-Cys-Cys-vs-Cys-Cys reference at the same joint strata) — drawn
+instead of the real non-bonded Cys-Cys population, they use a sample of
+non-Cys/non-Cys control edges matched to the same per-bin distribution
+over dist_3d AND n_neighbors (D), dist_cb AND n_neighbors (E), dist_3d
+AND dist_cb jointly with NO neighbor axis (F), or every --joint_match
+axis jointly, default dist_3d AND dist_cb AND n_neighbors (Fn) — drawn
 (--match_seed) from the ctrl_* candidate pool via _sample_matched_control.
-This asks a stricter question than A/C: is scored_attn elevated at
-SSBOND pairs specifically, or just at ANY close-range contact regardless
-of residue identity (which non-bonded Cys-Cys pairs, being Cys
-themselves, might already share with SSBOND pairs for non-bond-specific
-chemical reasons)?
+The n_neighbors axis matters because it sets the attention budget's
+per-neighbour baseline (see "Output .npz keys" above): without it, a
+control sample could differ from the real Cys-Cys group in attending-
+residue neighbour count alone and still show a scored_attn gap that has
+nothing to do with distance, Cys identity, or bonding — folding it in
+makes the non-Cys null more adversarial. F is kept alongside Fn
+(independent of --joint_match) specifically so the two can be compared
+directly: the AUC/effect shift from F to Fn is a direct measurement of
+what the neighbor-count axis is doing to the result. Each of D/E/F/Fn
+first reruns A/C's (or, for F/Fn, a fresh joint) stratification on the
+REAL Cys-Cys population at its own richer strata — D0/E0/C2/C2n below —
+both to report that as a standalone result and to get the bin edges
+_sample_matched_control needs. This asks a stricter question than A/C:
+is scored_attn elevated at SSBOND pairs specifically, or just at ANY
+close-range (and, for D/E/Fn, similarly-crowded) contact regardless of
+residue identity (which non-bonded Cys-Cys pairs, being Cys themselves,
+might already share with SSBOND pairs for non-bond-specific chemical
+reasons)?
 
-  D  non-Cys control (Ca-matched)        stratify by dist_3d,        score = scored_attn_{layer}
-                        — SSBOND vs. a dist_3d-matched non-Cys/non-Cys sample.
-  E  non-Cys control (Cb-matched)        stratify by dist_cb,        score = scored_attn_{layer}
-                        — SSBOND vs. a dist_cb-matched non-Cys/non-Cys sample.
-  F  non-Cys control (joint-matched)     stratify by --joint_match,  score = scored_attn_{layer}
-                        — SSBOND vs. a jointly-matched non-Cys/non-Cys sample.
+  D0  Ca+neighbor reference   stratify by (dist_3d, n_neighbors),       score = scored_attn_{layer}
+                        — SSBOND vs. non-bonded Cys-Cys at D's strata (reference + bin edges for D).
+  D   non-Cys control (Ca+neighbor-matched)     — SSBOND vs. a (dist_3d, n_neighbors)-matched
+                        non-Cys/non-Cys sample, at D0's strata.
+  E0  Cb+neighbor reference   stratify by (dist_cb, n_neighbors),       score = scored_attn_{layer}
+                        — SSBOND vs. non-bonded Cys-Cys at E's strata (reference + bin edges for E).
+  E   non-Cys control (Cb+neighbor-matched)     — SSBOND vs. a (dist_cb, n_neighbors)-matched
+                        non-Cys/non-Cys sample, at E0's strata.
+  C2  joint reference         stratify by (dist_cb, dist_3d), no neighbor axis, score = scored_attn_{layer}
+                        — SSBOND vs. non-bonded Cys-Cys at F's strata (reference + bin edges for F).
+  F   non-Cys control (dist_cb+dist-matched, no neighbor match) — SSBOND vs. a (dist_cb, dist_3d)
+                        -matched non-Cys/non-Cys sample, at C2's strata.
+  C2n joint reference         stratify by --joint_match (default dist_cb, dist_3d, n_neighbors)
+                        — SSBOND vs. non-bonded Cys-Cys at Fn's strata (reference + bin edges for Fn).
+  Fn  non-Cys control (joint-matched)           — SSBOND vs. a --joint_match-matched
+                        non-Cys/non-Cys sample, at C2n's strata.
 
-G/H/I repeat D/E/F again, but with the comparison's roles reversed: the
+G/H/I repeat D/E/Fn again, but with the comparison's roles reversed: the
 NON-annotated (non-bonded) Cys-Cys pairs now stand in as the "positive"
 class, compared against the exact same matched non-Cys/non-Cys samples
-D/E/F already drew (those were matched to the non-bonded Cys-Cys group's
-own per-bin counts, so they're already the right control for this). This
-asks: is scored_attn elevated at ANY Cys-Cys pair relative to a distance-
+D/E/Fn already drew (those were matched to the non-bonded Cys-Cys
+group's own per-bin counts, so they're already the right control for
+this — no extra sampling, same bin edges). This asks: is scored_attn
+elevated at ANY Cys-Cys pair relative to a distance-AND-neighbor-count-
 matched non-Cys/non-Cys pair, even when that Cys-Cys pair isn't an
 annotated disulfide — i.e. is the model's score partly tracking Cys-Cys
 chemistry/geometry on its own, separately from the SSBOND-specific signal
 A-F measure?
 
-  G  non-Cys control (Ca-matched, non-annotated Cys-Cys)    stratify by dist_3d
-  H  non-Cys control (Cb-matched, non-annotated Cys-Cys)    stratify by dist_cb
-  I  non-Cys control (joint-matched, non-annotated Cys-Cys) stratify by --joint_match
+  G  non-Cys control (Ca+neighbor-matched, non-annotated Cys-Cys)    at D0's strata
+  H  non-Cys control (Cb+neighbor-matched, non-annotated Cys-Cys)    at E0's strata
+  I  non-Cys control (joint-matched, non-annotated Cys-Cys)          at C2n's strata
 
 A two-panel figure (--fig_out, default ssbond_matched.svg) then plots
 log2(scored_attn_{layer}) against dist_3d (A's pairs) and dist_cb (C's
 pairs), split into SSBOND / not-annotated, each with a per-bin median step
-line. (D-I are not plotted — tables/CSV only.)
+line. (D0/D-I are not plotted — tables/CSV only.)
 
 All per-bin tables are also written as a single combined CSV
 (--tables_out, default ssbond_tables.csv): columns analysis/label/by/score
@@ -378,6 +409,7 @@ def accumulate(
     all_seq_dist    = []
     all_dist_3d     = []
     all_dist_cb     = []
+    all_n_neighbors = []
     all_is_ssbond   = []
     all_res_idx_i   = []
     all_res_idx_j   = []
@@ -391,6 +423,7 @@ def accumulate(
     ctrl_seq_dist    = []
     ctrl_dist_3d     = []
     ctrl_dist_cb     = []
+    ctrl_n_neighbors = []
     ctrl_res_idx_i   = []
     ctrl_res_idx_j   = []
     ctrl_protein_idx = []
@@ -467,6 +500,10 @@ def accumulate(
         seq_dist_vk = (E_idx_v.long() - n_indices.unsqueeze(-1).long()).abs().float()
 
         K_non_self = non_self_valid.float().sum(-1).clamp(min=1.0)  # [N_v]
+        # Broadcast per-source-residue neighbour count to every edge FROM
+        # that residue — same value for all K columns of a row, varying
+        # only by row/residue (the attending residue's own count).
+        n_neigh_vk = K_non_self.unsqueeze(-1).expand_as(E_idx_v)    # [N_v, K]
 
         n_cys_edges = 0
         is_ssbond_edge = None
@@ -487,6 +524,7 @@ def accumulate(
             all_seq_dist.append(seq_dist_vk[cys_edges].cpu().numpy())
             all_dist_3d.append(dist_3d_vk[cys_edges].cpu().numpy())
             all_dist_cb.append(dist_cb_vk[cys_edges].cpu().numpy())
+            all_n_neighbors.append(n_neigh_vk[cys_edges].cpu().numpy())
             all_is_ssbond.append(is_ssbond_edge)
             all_res_idx_i.append(res_idx_i_vk[cys_edges].cpu().numpy())
             all_res_idx_j.append(res_idx_j_vk[cys_edges].cpu().numpy())
@@ -511,6 +549,7 @@ def accumulate(
             ctrl_seq_dist.append(seq_dist_vk[ctrl_mask].cpu().numpy())
             ctrl_dist_3d.append(dist_3d_vk[ctrl_mask].cpu().numpy())
             ctrl_dist_cb.append(dist_cb_vk[ctrl_mask].cpu().numpy())
+            ctrl_n_neighbors.append(n_neigh_vk[ctrl_mask].cpu().numpy())
             ctrl_res_idx_i.append(res_idx_i_vk[ctrl_mask].cpu().numpy())
             ctrl_res_idx_j.append(res_idx_j_vk[ctrl_mask].cpu().numpy())
             ctrl_protein_idx.append(np.full(n_ctrl_edges, n_proteins - 1, dtype=np.int64))
@@ -559,6 +598,7 @@ def accumulate(
         "seq_dist":    np.concatenate(all_seq_dist).astype(np.float32),
         "dist_3d":     np.concatenate(all_dist_3d).astype(np.float32),
         "dist_cb":     np.concatenate(all_dist_cb).astype(np.float32),
+        "n_neighbors": np.concatenate(all_n_neighbors).astype(np.int32),
         "is_ssbond":   np.concatenate(all_is_ssbond).astype(bool),
         "ctrl_name":        np.array(ctrl_name, dtype=object),
         "ctrl_protein_idx": np.concatenate(ctrl_protein_idx).astype(np.int64),
@@ -567,6 +607,7 @@ def accumulate(
         "ctrl_seq_dist":    np.concatenate(ctrl_seq_dist).astype(np.float32),
         "ctrl_dist_3d":     np.concatenate(ctrl_dist_3d).astype(np.float32),
         "ctrl_dist_cb":     np.concatenate(ctrl_dist_cb).astype(np.float32),
+        "ctrl_n_neighbors": np.concatenate(ctrl_n_neighbors).astype(np.int32),
     }
     for l in range(L):
         out[f"attn_{l}"]        = np.concatenate(all_attn[l]).astype(np.float32)
@@ -652,20 +693,23 @@ class _AnalysisConfig:
     bin_mode:     str   = "adaptive"   # "adaptive" | "fixed"
     bin_width:    float = 0.5
     match_seed:   int   = 0
-    joint_match:  tuple = ("dist_cb", "dist")   # axes for the jointly-matched analysis F
+    joint_match:  tuple = ("dist_cb", "dist", "n_neigh")   # axes for the jointly-matched analysis F
     n_jobs:       int   = -1   # joblib workers for the bootstrap (-1 = all cores)
 
 
 def _collapse_directed_edges(d: "pd.DataFrame", n_dir: int, lo: "pd.Series", hi: "pd.Series") -> "pd.DataFrame":
-    """One row per undirected Cys-Cys pair, averaging dist/dist_cb/score
-    across the (up to 2) directed i->j / j->i rows accumulate() stores for
-    it. *lo*/*hi* are elementwise min/max(res_idx_i, res_idx_j), so both
-    directions of the same pair land on the same (prot, lo, hi) key."""
+    """One row per undirected Cys-Cys pair, averaging dist/dist_cb/n_neigh/
+    score across the (up to 2) directed i->j / j->i rows accumulate()
+    stores for it — n_neigh averages the two directions' attending-residue
+    neighbour counts (K_non_self of i, then of j), same convention as the
+    score itself. *lo*/*hi* are elementwise min/max(res_idx_i, res_idx_j),
+    so both directions of the same pair land on the same (prot, lo, hi)
+    key."""
     d = d.assign(pair=d.prot + "|" + lo.astype(str) + "|" + hi.astype(str))
     g = d.groupby("pair", as_index=False).agg(
         prot=("prot", "first"), bonded=("bonded", "max"),
-        dist=("dist", "mean"), dist_cb=("dist_cb", "mean"), score=("score", "mean"),
-        sep=("sep", "first"), n_dir=("score", "size"))
+        dist=("dist", "mean"), dist_cb=("dist_cb", "mean"), n_neigh=("n_neigh", "mean"),
+        score=("score", "mean"), sep=("sep", "first"), n_dir=("score", "size"))
     print(f"  directed edges (|i-j|>=sep_min): {n_dir}  ->  undirected pairs: {len(g)}")
     print(f"    {int(g.bonded.sum())} bonded, {int((~g.bonded).sum())} non-bonded; "
           f"{int((g.n_dir == 1).sum())} pairs seen in one direction only")
@@ -893,7 +937,7 @@ def _sample_matched_control(
     distance distribution. Samples without replacement when the pool has
     enough edges in a bin; otherwise takes every available edge in that
     bin and prints a warning (the matched count falls short there)."""
-    cols = ["prot", "bonded", "dist", "dist_cb", "score", "sep"]
+    cols = ["prot", "bonded", "dist", "dist_cb", "n_neigh", "score", "sep"]
     pool = _assign_bins(pool, by, edges)
     sampled = []
     for b, n in target_counts.items():
@@ -942,8 +986,10 @@ def _analyse(
     sub, tab = _bin_table(d, axes, score, edges, log_effect)
     auc, eff = _pooled(tab)
     (al, el), (ah, eh) = _bootstrap_ci(sub, axes, score, edges, cfg, parallel, log_effect)
-    strata = ", ".join(f"{a} ({sup[a][0]:.2f}-{sup[a][1]:.2f} A, {len(edges[a])-1} bins)"
-                       for a in axes)
+    axis_unit = {"dist": "A", "dist_cb": "A", "n_neigh": "", "sep": ""}
+    strata = ", ".join(
+        f"{a} ({sup[a][0]:.2f}-{sup[a][1]:.2f}{' ' + axis_unit[a] if axis_unit.get(a) else ''}, "
+        f"{len(edges[a])-1} bins)" for a in axes)
     n_occ = int(tab.auc.notna().sum())
     print(f"\n  [{label}]  strata: {strata}"
           + (f" -> {len(tab)} cells, {n_occ} with both classes" if len(axes) > 1 else "")
@@ -1026,13 +1072,13 @@ def _save_tables(analyses: list, path: str) -> str:
 
 def _load_control_pool(obj, layer: int, cfg: _AnalysisConfig) -> "pd.DataFrame | None":
     """Load + collapse the ctrl_* (non-Cys/non-Cys) fields from an open
-    .npz into the same (prot, bonded=False, dist, dist_cb, score) shape as
-    the Cys-Cys collapsed frame, for _sample_matched_control to draw from.
-    Returns None (with a warning) if the .npz predates the ctrl_* fields
-    (written by an older ``compute``)."""
+    .npz into the same (prot, bonded=False, dist, dist_cb, n_neigh, score)
+    shape as the Cys-Cys collapsed frame, for _sample_matched_control to
+    draw from. Returns None (with a warning) if the .npz predates the
+    ctrl_* fields (written by an older ``compute``)."""
     score_key = f"ctrl_scored_attn_{layer}"
-    cols = dict(dist="ctrl_dist_3d", dist_cb="ctrl_dist_cb", score=score_key,
-                sep="ctrl_seq_dist", protein="ctrl_protein_idx",
+    cols = dict(dist="ctrl_dist_3d", dist_cb="ctrl_dist_cb", n_neigh="ctrl_n_neighbors",
+                score=score_key, sep="ctrl_seq_dist", protein="ctrl_protein_idx",
                 res_i="ctrl_res_idx_i", res_j="ctrl_res_idx_j")
     avail = list(obj.files)
     if missing := [v for v in cols.values() if v not in avail]:
@@ -1055,21 +1101,27 @@ def analyze_npz(
 ) -> None:
     """Load *npz_path* (written by ``compute``) and run the three Cys-Cys
     analyses (A/B/C, see module docstring) against ``scored_attn_{layer}``,
-    plus — when the .npz has the ctrl_* (non-Cys/non-Cys) fields — six
-    more comparing a Cys-Cys class against a matched sample of non-Cys
-    control edges, each matched on Ca-Ca (D), virtual Cb-Cb (E) or both
-    jointly (F, via --joint_match, which removes the residual Ca-Ca
-    difference that E leaves free; C2 is F's Cys-Cys reference on the same
-    joint strata) — with D/E/F using SSBOND as the Cys-Cys class and
-    G/H/I repeating the same three comparisons with the non-annotated
-    (non-bonded) Cys-Cys pairs as the class instead, reusing D/E/F's exact
-    matched control samples. Prints each one's per-bin table and pooled
-    AUC/effect, saves the matched-control figure (A/C only) to *fig_out*,
-    and all per-bin tables (plus pooled AUC/effect + 95% CI) as a combined
-    CSV to *tables_out*."""
+    plus — when the .npz has the ctrl_* (non-Cys/non-Cys) fields — eight
+    more comparing a Cys-Cys class against a sample of non-Cys control
+    edges matched on Ca-Ca + the attending residue's neighbour count
+    (D), Cb-Cb + neighbour count (E), Ca-Ca + Cb-Cb jointly with NO
+    neighbour axis (F), or every --joint_match axis jointly, default
+    Ca-Ca + Cb-Cb + neighbour count (Fn) — see module docstring for why
+    neighbour count matters. F is kept alongside Fn specifically so their
+    AUC/effect can be diffed to measure what matching on neighbour count
+    changes. D0/E0/C2/C2n are D/E/F/Fn's own Cys-Cys-vs-Cys-Cys reference
+    at those same richer strata — both a standalone result and the source
+    of the bin edges the matched control is sampled into. D/E/F/Fn use
+    SSBOND as the Cys-Cys class; G/H/I repeat D/E/Fn (the neighbour-count-
+    matched three) with the non-annotated (non-bonded) Cys-Cys pairs as
+    the class instead, reusing D/E/Fn's exact matched control samples and
+    bin edges. Prints each one's per-bin table and pooled AUC/effect,
+    saves the matched-control figure (A/C only) to *fig_out*, and all per-bin
+    tables (plus pooled AUC/effect + 95% CI) as a combined CSV to
+    *tables_out*."""
     obj = np.load(npz_path, allow_pickle=True)
     score_key = f"scored_attn_{layer}"
-    cols = dict(dist="dist_3d", dist_cb="dist_cb", score=score_key,
+    cols = dict(dist="dist_3d", dist_cb="dist_cb", n_neigh="n_neighbors", score=score_key,
                 bond="is_ssbond", sep="seq_dist", protein="protein_idx",
                 res_i="res_idx_i", res_j="res_idx_j")
 
@@ -1111,114 +1163,160 @@ def analyze_npz(
 
         ctrl_pool = _load_control_pool(obj, layer, cfg)
         if ctrl_pool is not None:
-            bonded_rows = d.loc[d.bonded, ["prot", "bonded", "dist", "dist_cb", "score", "sep"]]
+            cys_cols = ["prot", "bonded", "dist", "dist_cb", "n_neigh", "score", "sep"]
+            bonded_rows = d.loc[d.bonded, cys_cols]
             # Non-annotated Cys-Cys pairs, relabeled "bonded" (the positive
             # class) for G/H/I below — same rows D/E/F treat as the real
             # non-bonded reference, now standing in for SSBOND itself.
-            nonbond_rows = d.loc[~d.bonded, ["prot", "bonded", "dist", "dist_cb", "score", "sep"]] \
-                .assign(bonded=True)
+            nonbond_rows = d.loc[~d.bonded, cys_cols].assign(bonded=True)
             match_rng = np.random.default_rng(cfg.match_seed)
 
-            # D/E reuse A/C's bin edges (edges=edgesA / edgesC below) rather than
-            # re-deriving them from the combined frame, as this previously did:
-            # the control is SAMPLED to match A/C's per-bin counts, so analysing it
-            # in different strata partly undoes the matching. The fix is a
-            # consistency one and barely moves the estimate — on a synthetic check
-            # it changed the pooled AUC in the third decimal only (D 0.764 -> 0.767,
-            # E 0.754 -> 0.753), via slightly different shared-support bounds.
+            # D/E/F each match the non-Cys control jointly on a distance AND
+            # n_neigh (attending-residue neighbour count — see module
+            # docstring: it sets the attention budget's per-neighbour
+            # baseline, so leaving it unmatched would let a scored_attn gap
+            # come from a crowding difference alone). D0/E0/C2 bin the REAL
+            # Cys-Cys population at those same joint strata first — both a
+            # standalone reference result and the source of the bin edges
+            # the matched control is then sampled into and re-analysed
+            # with (reusing another analysis's edges rather than re-deriving
+            # them is deliberate: the control is SAMPLED to match THAT
+            # table's per-bin counts, so analysing it in different strata
+            # would partly undo the matching).
+            _, tabD0, statsD0, edgesD = _analyse(
+                d, ("dist", "n_neigh"), "score", "D0 Ca+neighbor reference (joint strata)",
+                "dlog2 score", cfg, parallel)
             sampled_ca = _sample_matched_control(
-                ctrl_pool, "dist", edgesA, tabA.set_index("bin")["n_non"], match_rng)
+                ctrl_pool, ("dist", "n_neigh"), edgesD, tabD0.set_index("bin")["n_non"], match_rng)
             dD = pd.concat([bonded_rows, sampled_ca], ignore_index=True)
             _, tabD, statsD, _ = _analyse(
-                dD, "dist", "score", "D  non-Cys control (Ca-matched)", "dlog2 score", cfg,
-                parallel, edges=edgesA)
+                dD, ("dist", "n_neigh"), "score", "D  non-Cys control (Ca+neighbor-matched)",
+                "dlog2 score", cfg, parallel, edges=edgesD)
 
+            _, tabE0, statsE0, edgesE = _analyse(
+                d, ("dist_cb", "n_neigh"), "score", "E0 Cb+neighbor reference (joint strata)",
+                "dlog2 score", cfg, parallel)
             sampled_cb = _sample_matched_control(
-                ctrl_pool, "dist_cb", edgesC, tabC.set_index("bin")["n_non"], match_rng)
+                ctrl_pool, ("dist_cb", "n_neigh"), edgesE, tabE0.set_index("bin")["n_non"], match_rng)
             dE = pd.concat([bonded_rows, sampled_cb], ignore_index=True)
             _, tabE, statsE, _ = _analyse(
-                dE, "dist_cb", "score", "E  non-Cys control (Cb-matched)", "dlog2 score", cfg,
-                parallel, edges=edgesC)
+                dE, ("dist_cb", "n_neigh"), "score", "E  non-Cys control (Cb+neighbor-matched)",
+                "dlog2 score", cfg, parallel, edges=edgesE)
 
-            print(f"\n  summary: attention|nonCys(Ca) {statsD['auc']:.3f}   "
-                  f"attention|nonCys(Cb) {statsE['auc']:.3f}")
+            print(f"\n  summary: attention|nonCys(Ca+n) {statsD['auc']:.3f}   "
+                  f"attention|nonCys(Cb+n) {statsE['auc']:.3f}")
             analyses += [
-                ("D", "non-Cys control (Ca-matched)", "dist",    "score", tabD, statsD),
-                ("E", "non-Cys control (Cb-matched)", "dist_cb", "score", tabE, statsE),
+                ("D0", "Ca+neighbor reference (joint strata)", "dist+n_neigh",    "score", tabD0, statsD0),
+                ("D",  "non-Cys control (Ca+neighbor-matched)", "dist+n_neigh",    "score", tabD,  statsD),
+                ("E0", "Cb+neighbor reference (joint strata)", "dist_cb+n_neigh", "score", tabE0, statsE0),
+                ("E",  "non-Cys control (Cb+neighbor-matched)", "dist_cb+n_neigh", "score", tabE,  statsE),
             ]
 
             # G/H — the same non-Cys comparison as D/E, but with the
             # NON-annotated Cys-Cys pairs standing in as the "bonded" class
             # instead of SSBOND: does the model's score still separate any
-            # Cys-Cys pair from a distance-matched non-Cys/non-Cys pair, or
-            # is that separation specific to actual disulfides? Reuses
-            # sampled_ca/sampled_cb verbatim (same control sample, same
-            # edges) since they were already matched to the per-bin COUNT
-            # of non-bonded Cys-Cys pairs — exactly this group.
+            # Cys-Cys pair from a distance+neighbor-matched non-Cys/non-Cys
+            # pair, or is that separation specific to actual disulfides?
+            # Reuses sampled_ca/sampled_cb verbatim (same control sample,
+            # same edges) since they were already matched to the per-bin
+            # COUNT of non-bonded Cys-Cys pairs — exactly this group.
             _, tabG, statsG, _ = _analyse(
                 pd.concat([nonbond_rows, sampled_ca], ignore_index=True),
-                "dist", "score", "G  non-Cys control (Ca-matched, non-annotated Cys-Cys)",
-                "dlog2 score", cfg, parallel, edges=edgesA)
+                ("dist", "n_neigh"), "score",
+                "G  non-Cys control (Ca+neighbor-matched, non-annotated Cys-Cys)",
+                "dlog2 score", cfg, parallel, edges=edgesD)
 
             _, tabH, statsH, _ = _analyse(
                 pd.concat([nonbond_rows, sampled_cb], ignore_index=True),
-                "dist_cb", "score", "H  non-Cys control (Cb-matched, non-annotated Cys-Cys)",
-                "dlog2 score", cfg, parallel, edges=edgesC)
+                ("dist_cb", "n_neigh"), "score",
+                "H  non-Cys control (Cb+neighbor-matched, non-annotated Cys-Cys)",
+                "dlog2 score", cfg, parallel, edges=edgesE)
 
-            print(f"\n  summary: attention|nonCys(Ca, non-annotated) {statsG['auc']:.3f}   "
-                  f"attention|nonCys(Cb, non-annotated) {statsH['auc']:.3f}")
+            print(f"\n  summary: attention|nonCys(Ca+n, non-annotated) {statsG['auc']:.3f}   "
+                  f"attention|nonCys(Cb+n, non-annotated) {statsH['auc']:.3f}")
             analyses += [
-                ("G", "non-Cys control (Ca-matched, non-annotated Cys-Cys)",
-                 "dist", "score", tabG, statsG),
-                ("H", "non-Cys control (Cb-matched, non-annotated Cys-Cys)",
-                 "dist_cb", "score", tabH, statsH),
+                ("G", "non-Cys control (Ca+neighbor-matched, non-annotated Cys-Cys)",
+                 "dist+n_neigh", "score", tabG, statsG),
+                ("H", "non-Cys control (Cb+neighbor-matched, non-annotated Cys-Cys)",
+                 "dist_cb+n_neigh", "score", tabH, statsH),
             ]
 
-            # F — the same non-Cys comparison, matched JOINTLY on several axes
-            # (default Cb and Ca). E matches on Cb alone, which leaves Ca free:
-            # Cys-Cys pairs inside the close-Cb window are overwhelmingly
-            # disulfides, with Ca tightly constrained and the Cb vectors facing
-            # each other, whereas a non-Cys pair whose *virtual* Cb atoms happen
-            # to be that close can sit at almost any Ca separation. One class is
-            # then a tight cluster in geometry space and the other diffuse, so
-            # E's separation can be the residual Ca difference rather than
-            # anything about the pair. F closes that route; add "sep" to
-            # --joint_match to close the sequence-separation route too.
-            axes_f = tuple(cfg.joint_match)
-            if missing_ax := [a for a in axes_f if a not in d.columns]:
-                print(f"  WARNING: joint analysis F skipped — no such column(s) {missing_ax}")
+            # C2/F — the same non-Cys comparison, matched JOINTLY on Ca-Ca
+            # AND Cb-Cb at once, with NO neighbour-count axis (the fixed,
+            # original two-axis joint match, kept independent of
+            # --joint_match so it's always available as the "before"
+            # half of the neighbour-matching comparison below). E matches
+            # on Cb alone, which leaves Ca free: Cys-Cys pairs inside the
+            # close-Cb window are overwhelmingly disulfides, with Ca
+            # tightly constrained and the Cb vectors facing each other,
+            # whereas a non-Cys pair whose *virtual* Cb atoms happen to be
+            # that close can sit at almost any Ca separation. One class is
+            # then a tight cluster in geometry space and the other diffuse,
+            # so E's separation can be the residual Ca difference rather
+            # than anything about the pair. C2/F closes that route (but,
+            # unlike D/E, does NOT control for neighbour count).
+            axes_c2 = ("dist_cb", "dist")
+            _, tabC2, statsC2, edgesC2 = _analyse(
+                d, axes_c2, "score", "C2 joint reference (joint strata, no neighbor match)",
+                "dlog2 score", cfg, parallel)
+            sampled_j = _sample_matched_control(
+                ctrl_pool, axes_c2, edgesC2, tabC2.set_index("bin")["n_non"], match_rng)
+            dF = pd.concat([bonded_rows, sampled_j], ignore_index=True)
+            _, tabF, statsF, _ = _analyse(
+                dF, axes_c2, "score", "F  non-Cys control (dist_cb+dist-matched, no neighbor match)",
+                "dlog2 score", cfg, parallel, edges=edgesC2)
+            analyses += [
+                ("C2", "joint reference (joint strata, no neighbor match)",
+                 "+".join(axes_c2), "score", tabC2, statsC2),
+                ("F", "non-Cys control (dist_cb+dist-matched, no neighbor match)",
+                 "+".join(axes_c2), "score", tabF, statsF),
+            ]
+
+            # C2n/Fn — the same joint comparison, now ALSO matched on
+            # --joint_match's extra axes (default adds n_neigh). Comparing
+            # Fn's AUC/effect against F's directly measures what the
+            # neighbour-count axis is doing: how much of the apparent
+            # SSBOND signal in F survives once attending-residue crowding
+            # is matched too. Add "sep" to --joint_match to additionally
+            # close the sequence-separation route.
+            axes_fn = tuple(cfg.joint_match)
+            if missing_ax := [a for a in axes_fn if a not in d.columns]:
+                print(f"  WARNING: joint analysis Fn skipped — no such column(s) {missing_ax}")
             else:
-                _, tabCj, statsCj, edgesF = _analyse(
-                    d, axes_f, "score", "C2 Cb-matched control (joint strata)",
+                _, tabC2n, statsC2n, edgesFn = _analyse(
+                    d, axes_fn, "score", "C2n joint reference (joint strata, +neighbor match)",
                     "dlog2 score", cfg, parallel)
-                sampled_j = _sample_matched_control(
-                    ctrl_pool, axes_f, edgesF, tabCj.set_index("bin")["n_non"], match_rng)
-                dF = pd.concat([bonded_rows, sampled_j], ignore_index=True)
-                _, tabF, statsF, _ = _analyse(
-                    dF, axes_f, "score", f"F  non-Cys control ({'+'.join(axes_f)}-matched)",
-                    "dlog2 score", cfg, parallel, edges=edgesF)
-                print(f"\n  summary: attention|nonCys({'+'.join(axes_f)}) {statsF['auc']:.3f}"
-                      f"   (vs {statsE['auc']:.3f} matched on dist_cb alone)")
+                sampled_jn = _sample_matched_control(
+                    ctrl_pool, axes_fn, edgesFn, tabC2n.set_index("bin")["n_non"], match_rng)
+                dFn = pd.concat([bonded_rows, sampled_jn], ignore_index=True)
+                _, tabFn, statsFn, _ = _analyse(
+                    dFn, axes_fn, "score", f"Fn non-Cys control ({'+'.join(axes_fn)}-matched)",
+                    "dlog2 score", cfg, parallel, edges=edgesFn)
+                print(f"\n  summary: attention|nonCys(dist_cb+dist) {statsF['auc']:.3f}"
+                      f"   attention|nonCys({'+'.join(axes_fn)}) {statsFn['auc']:.3f}"
+                      f"   -> neighbor-count-matching shift: "
+                      f"{statsFn['auc'] - statsF['auc']:+.3f} AUC, "
+                      f"{statsFn['eff'] - statsF['eff']:+.2f} dlog2 score")
                 analyses += [
-                    ("C2", "Cb-matched control (joint strata)",
-                     "+".join(axes_f), "score", tabCj, statsCj),
-                    ("F", f"non-Cys control ({'+'.join(axes_f)}-matched)",
-                     "+".join(axes_f), "score", tabF, statsF),
+                    ("C2n", "joint reference (joint strata, +neighbor match)",
+                     "+".join(axes_fn), "score", tabC2n, statsC2n),
+                    ("Fn", f"non-Cys control ({'+'.join(axes_fn)}-matched)",
+                     "+".join(axes_fn), "score", tabFn, statsFn),
                 ]
 
                 # I — G/H's "non-annotated Cys-Cys vs non-Cys" comparison,
-                # matched jointly (--joint_match, "both levels" by default)
-                # the same way F tightens E. Reuses sampled_j verbatim.
+                # at Fn's strictest (neighbor-matched) strata. Reuses
+                # sampled_jn verbatim.
                 _, tabI, statsI, _ = _analyse(
-                    pd.concat([nonbond_rows, sampled_j], ignore_index=True),
-                    axes_f, "score",
-                    f"I  non-Cys control ({'+'.join(axes_f)}-matched, non-annotated Cys-Cys)",
-                    "dlog2 score", cfg, parallel, edges=edgesF)
-                print(f"\n  summary: attention|nonCys({'+'.join(axes_f)}, non-annotated) "
-                      f"{statsI['auc']:.3f}   (vs {statsH['auc']:.3f} matched on dist_cb alone)")
+                    pd.concat([nonbond_rows, sampled_jn], ignore_index=True),
+                    axes_fn, "score",
+                    f"I  non-Cys control ({'+'.join(axes_fn)}-matched, non-annotated Cys-Cys)",
+                    "dlog2 score", cfg, parallel, edges=edgesFn)
+                print(f"\n  summary: attention|nonCys({'+'.join(axes_fn)}, non-annotated) "
+                      f"{statsI['auc']:.3f}   (vs {statsH['auc']:.3f} matched on dist_cb+n_neigh alone)")
                 analyses += [
-                    ("I", f"non-Cys control ({'+'.join(axes_f)}-matched, non-annotated Cys-Cys)",
-                     "+".join(axes_f), "score", tabI, statsI),
+                    ("I", f"non-Cys control ({'+'.join(axes_fn)}-matched, non-annotated Cys-Cys)",
+                     "+".join(axes_fn), "score", tabI, statsI),
                 ]
 
     print(f"  figure -> {_plot_matched_control(dA, dC, fig_out)}")
@@ -1313,18 +1411,26 @@ def parse_args() -> argparse.Namespace:
                         "'fixed': uniform --bin_width grid")
     s.add_argument("--bin_width", type=float, default=0.5,
                    help="Bin width (A) in --bin_mode fixed")
-    s.add_argument("--joint_match", nargs="+", default=["dist_cb", "dist"],
+    s.add_argument("--joint_match", nargs="+", default=["dist_cb", "dist", "n_neigh"],
                    metavar="COL",
-                   help="Columns the jointly-matched non-Cys comparison (analysis F) "
-                        "matches on simultaneously; strata are the cross-product of "
-                        "the per-axis bins, with bins per axis reduced so each CELL "
-                        "keeps ~--min_minority minority pairs. Choose from dist "
-                        "(Ca-Ca), dist_cb (virtual Cb-Cb), sep (|i-j|). Default "
-                        "'dist_cb dist' isolates the comparison from the Ca-Ca "
-                        "difference that matching on Cb alone leaves free")
+                   help="Columns the jointly-matched non-Cys comparison (analysis Fn, "
+                        "and G/H/I's non-annotated-Cys-Cys counterpart I) matches on "
+                        "simultaneously; strata are the cross-product of the per-axis "
+                        "bins, with bins per axis reduced so each CELL keeps "
+                        "~--min_minority minority pairs. Choose from dist (Ca-Ca), "
+                        "dist_cb (virtual Cb-Cb), n_neigh (attending residue's non-self "
+                        "neighbour count — the attention budget's per-neighbour "
+                        "baseline; matching on it keeps the non-Cys null from "
+                        "separating on crowding alone), sep (|i-j|). Default "
+                        "'dist_cb dist n_neigh' isolates the comparison from the Ca-Ca "
+                        "and neighbour-count differences that matching on Cb alone "
+                        "leaves free. Analysis F always matches on (dist_cb, dist) "
+                        "alone, regardless of this flag — it's the fixed 'before' "
+                        "comparison Fn's AUC/effect is diffed against to measure what "
+                        "adding neighbour-count matching changes")
     s.add_argument("--match_seed", type=int, default=0,
-                   help="Seed for sampling the distance-matched non-Cys "
-                        "control comparison (analyses D/E)")
+                   help="Seed for sampling the distance(+neighbor)-matched non-Cys "
+                        "control comparison (analyses D/E/F/Fn and G/H/I)")
     s.add_argument("--n_jobs", type=int, default=-1,
                    help="joblib worker processes for the bootstrap (-1 = all cores)")
 
